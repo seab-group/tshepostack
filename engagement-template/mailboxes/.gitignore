@@ -1,0 +1,10 @@
+# Local-only coordination directories — not committed.
+# presence/: per-agent heartbeat JSON, written every 30s by the supervisor.
+#            Read by same-machine peers to check if an agent is live.
+# wake/:     transient signal files, written by the supervisor after a push
+#            when a recipient's mailbox changed. Recipients poll for this file
+#            every 1s while idle and wake immediately when it appears.
+#            Also written by wake-listen.ts when a Supabase Realtime broadcast
+#            arrives for this agent.
+presence/
+wake/
