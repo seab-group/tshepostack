@@ -26,6 +26,7 @@ Conventions:
 - [/design-review](design-review/SKILL.md): Designer's eye QA: finds visual inconsistency, spacing issues, hierarchy problems, AI slop patterns, and slow interactions — then fixes them.
 - [/design-shotgun](design-shotgun/SKILL.md): Design shotgun: generate multiple AI design variants, open a comparison board, collect structured feedback, and iterate.
 - [/devex-review](devex-review/SKILL.md): Live developer experience audit.
+- [/doc-engineer](doc-engineer/SKILL.md): ECOBA Doc Engineer — keeps project documentation synchronized with code as it changes.
 - [/document-generate](document-generate/SKILL.md): Generate missing documentation from scratch for a feature, module, or entire project.
 - [/document-release](document-release/SKILL.md): Post-ship documentation update.
 - [/freeze](freeze/SKILL.md): Restrict file edits to a specific directory for the session.
@@ -53,6 +54,7 @@ Conventions:
 - [/plan-tune](plan-tune/SKILL.md): Self-tuning question sensitivity + developer psychographic for gstack (v1: observational).
 - [/qa](qa/SKILL.md): Systematically QA test a web application and fix bugs found.
 - [/qa-only](qa-only/SKILL.md): Report-only QA testing.
+- [/req-spec](req-spec/SKILL.md): ECOBA Requirements-to-Spec engineer for the cstack autonomous loop.
 - [/retro](retro/SKILL.md): Weekly engineering retrospective.
 - [/review](review/SKILL.md): Pre-landing PR review.
 - [/scrape](scrape/SKILL.md): Pull data from a web page.
@@ -64,6 +66,7 @@ Conventions:
 - [/spec](spec/SKILL.md): Turn vague intent into a precise, executable spec in five phases.
 - [/sync-gbrain](sync-gbrain/SKILL.md): Keep gbrain current with this repo's code and refresh agent search guidance in CLAUDE.md.
 - [/unfreeze](unfreeze/SKILL.md): Clear the freeze boundary set by /freeze, allowing edits to all directories again.
+- [/workflow-qa](workflow-qa/SKILL.md): Systematically QA test an approval/state-machine workflow as a directed graph and fix bugs found.
 
 ## Browse Commands
 

@@ -78,6 +78,11 @@
       "routing": "Uses the browse tool to actually TEST the\ndeveloper experience: navigates docs, tries the getting started flow, times\nTTHW, screenshots error messages, evaluates CLI help text. Produces a DX\nscorecard with evidence. Compares against /plan-devex-review scores if they\nexist (the boomerang: plan said 3 minutes, reality says 8). Use when asked to\n\"test the DX\", \"DX audit\", \"developer experience test\", or \"try the\nonboarding\". Proactively suggest after shipping a developer-facing feature.",
       "voice_line": "Voice triggers (speech-to-text aliases): \"dx audit\", \"test the developer experience\", \"try the onboarding\", \"developer experience test\"."
     },
+    "doc-engineer": {
+      "lead": "ECOBA Doc Engineer — keeps project documentation synchronized with code as it changes.",
+      "routing": "Consumes completed tasks from the autonomous loop ledger, reads their diffs, and updates all affected documentation (API docs, READMEs, user guides, changelogs) as consulting-grade deliverables. Use when documentation must be brought in sync with recent code changes, when a task in TODO.md needs its doc_status cleared, or when preparing documentation deliverables for client review/UAT.",
+      "voice_line": null
+    },
     "document-generate": {
       "lead": "Generate missing documentation from scratch for a feature, module, or entire project.",
       "routing": "Uses the Diataxis framework (tutorial / how-to / reference / explanation) to produce\ncomplete, structured documentation. Can be invoked standalone or called by\n/document-release when it finds coverage gaps. Use when asked to \"write docs\",\n\"generate documentation\", \"document this feature\", \"create a tutorial\", or\n\"explain this module\".",
@@ -213,6 +218,11 @@
       "routing": "Systematically tests a web application and produces a\nstructured report with health score, screenshots, and repro steps — but never\nfixes anything. Use when asked to \"just report bugs\", \"qa report only\", or\n\"test but don't fix\". For the full test-fix-verify loop, use /qa instead.\nProactively suggest when the user wants a bug report without any code changes.",
       "voice_line": "Voice triggers (speech-to-text aliases): \"bug report\", \"just check for bugs\"."
     },
+    "req-spec": {
+      "lead": "ECOBA Requirements-to-Spec engineer for the cstack autonomous loop.",
+      "routing": "Turns a rough prompt, a docs/TODO.md item, or a batch of open TODO items into properly-formed task specs (tasks/<ID>.md with frontmatter, ACs mapped to real checks) ready for `kernel/task sync`. Use when the user describes new work in plain English, asks to draft a spec for a TODO item, or asks to clear/triage an open backlog. Drafts only — never registers tasks or touches ledger/ directly; that's `kernel/task sync`'s job, run by the human after review.",
+      "voice_line": null
+    },
     "retro": {
       "lead": "Weekly engineering retrospective.",
       "routing": "Analyzes commit history, work patterns,\nand code quality metrics with persistent history and trend tracking.\nTeam-aware: breaks down per-person contributions with praise and growth areas.\nUse when asked to \"weekly retro\", \"what did we ship\", or \"engineering retrospective\".\nProactively suggest at the end of a work week or sprint.",
@@ -267,6 +277,11 @@
       "lead": "Clear the freeze boundary set by /freeze, allowing edits to all directories again.",
       "routing": "Use when you want to widen edit scope without ending the session.\nUse when asked to \"unfreeze\", \"unlock edits\", \"remove freeze\", or\n\"allow all edits\".",
       "voice_line": null
+    },
+    "workflow-qa": {
+      "lead": "Systematically QA test an approval/state-machine workflow as a directed graph and fix bugs found.",
+      "routing": "Models the workflow — states as nodes, transitions\nas edges — then verifies every node, every edge, and every edge that should\nNOT exist. Use when asked to \"test the workflow\", \"QA the approval flow\",\n\"verify the state machine\", \"check who can approve what\", or after any\nchange to workflow logic, transition tables, or role permissions.\nProactively suggest when the user modifies a transitions map (e.g.\nWORKFLOW_TRANSITIONS), adds a workflow state, or changes approver roles.\nThree tiers: Quick (happy path + forbidden edges), Standard (+ actor\nauthorization + guards), Exhaustive (+ structural analysis + concurrency\nprobes). Produces a transition matrix, pass/fail evidence per edge, atomic\nfix commits, and a client sign-off-ready report. For report-only mode, use\n--report-only. (cstack)",
+      "voice_line": "Voice triggers (speech-to-text aliases): \"test the approvals\", \"check the workflow\", \"run workflow QA\"."
     }
   }
 }
