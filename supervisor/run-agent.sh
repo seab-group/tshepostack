@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
-# cstack autonomous agent loop v7 — real-time collaboration
-# Changes from v6:
+# cstack autonomous agent loop v8 — real-time activity streaming
+# Changes from v7:
+#  - Switches to --output-format stream-json --verbose so tool calls are
+#    visible in real-time instead of only available after session ends.
+#  - Pipes claude output through stream-processor.py which writes:
+#      logs/live.json        — current task, last tool, session duration (atomic)
+#      logs/live-events.jsonl — append-only feed of every tool call
+#    Both files are read by `fleet.sh watch` and `fleet.sh stream`.
+#  - Presence file is now updated per tool call (last_tool, last_summary)
+#    not just per session, so fleet.sh watch shows live activity.
+#  - Metrics extraction unchanged: stream-processor.py emits a compatible
+#    single JSON object at session end which the existing Python parser reads.
+# Changes from v6 (also in v7):
 #  - Presence beacon: writes mailboxes/presence/<agent>.json locally every 30s
 #  - Fast idle wake: WAKE_CHECK_INTERVAL=5s (was 30); MAX_IDLE_WAIT=300s (was 1800)
 #  - Local wake signals: after each session push, writes mailboxes/wake/<recipient>
@@ -33,6 +44,9 @@
 #   READ_REPOS="git@github.com:org/api.git ..."  # optional, read-only
 
 set -u
+
+SUPERVISOR_DIR="$(cd "$(dirname "$0")" && pwd)"
+STREAM_PROCESSOR="$SUPERVISOR_DIR/stream-processor.py"
 
 AGENT_NAME="${1:?Usage: run-agent.sh <agent-name> <role-file> [model]}"
 ROLE_FILE="${2:?Provide a role file, e.g. FEATURE_ROLE.md}"
@@ -387,14 +401,21 @@ while true; do
   watch_mailbox_background "$MAILBOX_HASH" &
   WATCHER_PID=$!
 
+  # Run claude with stream-json so tool calls are visible in real-time.
+  # stream-processor.py writes live.json + live-events.jsonl and emits
+  # a metrics-compatible JSON summary to stdout at session end.
   (
+    set -o pipefail
     cd "$RUN_CWD" || exit 1
     claude --dangerously-skip-permissions \
            "${ADD_DIRS[@]}" \
            -p "$(cat "$CONTROL_DIR/AGENT_BASE.md" "$CONTROL_DIR/roles/$ROLE_FILE")" \
            --model "$MODEL" \
-           --output-format json
-  ) > "$JSONFILE" 2> "$LOG_DIR/${RUN_ID}.stderr"
+           --output-format stream-json \
+           --verbose \
+           2> "$LOG_DIR/${RUN_ID}.stderr" \
+    | python3 "$STREAM_PROCESSOR" "$LOG_DIR" "$AGENT_NAME" "$CONTROL_DIR"
+  ) > "$JSONFILE"
   EXIT_CODE=$?
   EPOCH_END=$(date +%s)
   DURATION=$((EPOCH_END - EPOCH_START))

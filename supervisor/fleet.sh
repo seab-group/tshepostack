@@ -5,7 +5,9 @@
 #   ./fleet.sh start     Start all agents in the background (logs → ~/agents/<name>/logs/)
 #   ./fleet.sh stop      Stop all running agents gracefully
 #   ./fleet.sh status    Show live status of every agent (running/idle/stopped)
-#   ./fleet.sh logs      Tail all agent logs interleaved in one stream (Ctrl-C to exit)
+#   ./fleet.sh watch     Live refreshing dashboard — task, duration, last tool (Ctrl-C to exit)
+#   ./fleet.sh stream    Real-time event feed — every tool call from every agent as it happens
+#   ./fleet.sh logs      Tail all supervisor stdout logs interleaved (Ctrl-C to exit)
 #   ./fleet.sh install   Register all agents as launchd (macOS) / systemd (Linux) services
 #                        so they start at login and restart on crash — no terminal needed
 #   ./fleet.sh uninstall Remove all OS service registrations
@@ -199,20 +201,68 @@ cmd_status() {
 }
 
 cmd_logs() {
-  local tmpdir
-  tmpdir=$(mktemp -d)
-  trap 'rm -rf "$tmpdir"; kill 0' EXIT INT TERM
+  trap 'kill 0' EXIT INT TERM
 
-  # Tail each agent log with a prefixed label, merge into one stream
   read_fleet | while read -r name _role _model; do
     local log; log="$(agent_log_dir "$name")/stdout.log"
     mkdir -p "$(dirname "$log")"
     touch "$log"
-    # tail with agent name prefix
     tail -f "$log" | sed "s/^/[$name] /" &
   done
 
-  echo "Tailing all agent logs — Ctrl-C to exit"
+  echo "Tailing all agent supervisor logs — Ctrl-C to exit"
+  wait
+}
+
+cmd_watch() {
+  local watch_script="$SCRIPT_DIR/watch.ts"
+  if ! command -v bun &>/dev/null; then
+    die "bun is required for fleet.sh watch (https://bun.sh)"
+  fi
+  [ -f "$watch_script" ] || die "watch.ts not found: $watch_script"
+  bun run "$watch_script" "$FLEET_CONF" "$HOME/agents"
+}
+
+cmd_stream() {
+  # Real-time event feed: tail every agent's live-events.jsonl and format each line.
+  # Output: [agent-be  12m34s] Bash        git commit -m 'feat(FEAT-001)...'
+  trap 'kill 0' EXIT INT TERM
+
+  local started=0
+  read_fleet | while read -r name _role _model; do
+    local events_file; events_file="$(agent_log_dir "$name")/live-events.jsonl"
+    mkdir -p "$(agent_log_dir "$name")"
+    touch "$events_file"
+    started=$((started + 1))
+
+    tail -f "$events_file" | python3 - "$name" &<<'PYEOF'
+import sys, json
+agent = sys.argv[1]
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw: continue
+    try:
+        ev = json.loads(raw)
+    except json.JSONDecodeError:
+        continue
+    etype   = ev.get("type", "")
+    ts      = ev.get("ts", "")[-8:-1] if ev.get("ts") else "--:--:--"  # HH:MM:SS
+    task    = ev.get("task") or ev.get("agent", "—")
+    if etype == "tool_call":
+        tool    = (ev.get("tool") or "").ljust(12)
+        summary = ev.get("summary", "")[:60]
+        print(f"\033[36m[{agent}]\033[0m {ts}  \033[33m{tool}\033[0m  {summary}", flush=True)
+    elif etype == "task_claimed":
+        print(f"\033[36m[{agent}]\033[0m {ts}  \033[32m→ claimed {ev.get('task','?')}\033[0m", flush=True)
+    elif etype == "session_end":
+        dur = ev.get("duration_s", 0)
+        m, s = divmod(dur, 60)
+        print(f"\033[36m[{agent}]\033[0m {ts}  \033[2msession end — {m}m{s}s  task={task}\033[0m", flush=True)
+PYEOF
+
+  done
+
+  echo "Streaming tool-call events from all agents — Ctrl-C to exit"
   wait
 }
 
@@ -250,6 +300,8 @@ case "$CMD" in
   start)     cmd_start ;;
   stop)      cmd_stop ;;
   status)    cmd_status ;;
+  watch)     cmd_watch ;;
+  stream)    cmd_stream ;;
   logs)      cmd_logs ;;
   install)   cmd_install ;;
   uninstall) cmd_uninstall ;;
@@ -260,7 +312,9 @@ case "$CMD" in
     echo "  start      Start all agents in the background"
     echo "  stop       Stop all running agents"
     echo "  status     Show live status of every agent"
-    echo "  logs       Tail all agent logs in one stream (Ctrl-C to exit)"
+    echo "  watch      Live dashboard — task, duration, last tool (Ctrl-C)"
+    echo "  stream     Real-time tool-call feed from all agents (Ctrl-C)"
+    echo "  logs       Tail all supervisor stdout logs (Ctrl-C)"
     echo "  install    Register all as OS services (survive logout, auto-restart)"
     echo "  uninstall  Remove OS service registrations"
     echo "  restart    stop + start"
