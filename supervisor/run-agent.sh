@@ -47,6 +47,16 @@ set -u
 
 SUPERVISOR_DIR="$(cd "$(dirname "$0")" && pwd)"
 STREAM_PROCESSOR="$SUPERVISOR_DIR/stream-processor.py"
+# shellcheck disable=SC1091
+. "$SUPERVISOR_DIR/cost-guards.sh"
+
+# Cost guards (override via per-agent config or env):
+#   IDLE_PRESKIP=1            skip claude session when kernel says no work AND
+#                              mailbox is empty (saves ~$0.24 per idle iter).
+#   SESSION_TIMEOUT=600       hard wall-clock cap on each claude invocation
+#                              (seconds). Set 0 to disable.
+IDLE_PRESKIP="${IDLE_PRESKIP:-1}"
+SESSION_TIMEOUT="${SESSION_TIMEOUT:-600}"
 
 AGENT_NAME="${1:?Usage: run-agent.sh <agent-name> <role-file> [model]}"
 ROLE_FILE="${2:?Provide a role file, e.g. FEATURE_ROLE.md}"
@@ -385,6 +395,29 @@ while true; do
   echo "[$AGENT_NAME] iteration start @ control:$COMMIT_CTRL"
   write_presence "working"
 
+  # ----- Cost guard: idle preskip ---------------------------------------------
+  # If the kernel says no eligible work AND our mailbox has no incoming
+  # messages, skip launching claude entirely. We still record a synthetic
+  # no_work metric line so metrics-report.sh sees the iteration.
+  WORK_REPO_NAME=""
+  if [ -n "${WORK_REPO_URL:-}" ]; then
+    WORK_REPO_NAME=$(basename "$WORK_REPO_URL" .git)
+  fi
+  export AGENT_DOMAIN WORK_REPO_NAME
+  if should_skip_idle_session "$CONTROL_DIR" "$AGENT_NAME" "$AGENT_ROLE"; then
+    echo "[$AGENT_NAME] preskip: no eligible tasks + empty mailbox — skipping claude session"
+    EPOCH_END=$(date +%s)
+    DURATION=$((EPOCH_END - EPOCH_START))
+    SKIP_METRIC=$(printf '{"ts":"%s","agent":"%s","duration_s":%d,"exit_code":0,"control_commit":"%s","task":null,"outcome":"no_work","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cost_usd":0,"num_turns":0,"no_work":true,"context_exhausted":false,"preskip":true}' \
+      "$TS_START" "$AGENT_NAME" "$DURATION" "$COMMIT_CTRL")
+    echo "$SKIP_METRIC" >> "$METRICS_FILE" 2>/dev/null || true
+    consecutive_fails=0
+    write_presence "idle"
+    idle_wait
+    continue
+  fi
+  # ----------------------------------------------------------------------------
+
   # Snapshot mailbox blob hash so the watcher can detect incoming messages
   MAILBOX_HASH=$(git -C "$CONTROL_DIR" ls-tree HEAD "mailboxes/$AGENT_NAME.md" 2>/dev/null | awk '{print $3}' || echo "")
 
@@ -404,10 +437,13 @@ while true; do
   # Run claude with stream-json so tool calls are visible in real-time.
   # stream-processor.py writes live.json + live-events.jsonl and emits
   # a metrics-compatible JSON summary to stdout at session end.
+  # Wall-clock cap: SESSION_TIMEOUT seconds (default 600). 124 = killed by
+  # watchdog — recorded as a crash via existing exit-code path.
   (
     set -o pipefail
     cd "$RUN_CWD" || exit 1
-    claude --dangerously-skip-permissions \
+    run_with_timeout "$SESSION_TIMEOUT" \
+      claude --dangerously-skip-permissions \
            "${ADD_DIRS[@]}" \
            -p "$(cat "$CONTROL_DIR/AGENT_BASE.md" "$CONTROL_DIR/roles/$ROLE_FILE")" \
            --model "$MODEL" \
