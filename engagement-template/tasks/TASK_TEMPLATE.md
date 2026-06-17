@@ -6,7 +6,7 @@
 
 ## Traceability
 - Requirement: REQ-XXX (from REQUIREMENTS.md)  <!-- or "ad hoc" with justification -->
-- Repo: <dsti-cms-api | dsti-cms-web | dsti-cms-docs>
+- Repo: <repo-name>                       <!-- the WORK repo this task targets -->
 - Domain: <be | fe | full | doc>
 
 ## Context
