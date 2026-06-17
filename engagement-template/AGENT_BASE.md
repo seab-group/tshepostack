@@ -69,6 +69,6 @@ Also summarize in PROGRESS.md. Standard routes:
 ## Hard rules
 - NEVER edit `ledger/*.task` directly, or `kernel/`, AGENT_BASE, role files, CLAUDE.md, skills, or `contracts/` (outside the authorized contract-update path). Disagree with a rule → say so in PROGRESS.md, obey anyway.
 - NEVER call `kernel/task unblock` — it is human-only, for reversing `needs_human`. (Agents reverse `awaiting_info` via `kernel/task resume`, which IS agent-permitted — see Mailbox sending.) If a task is stuck `needs_human`, your job is to wait, work on other eligible tasks, or (if you are the one who can now act because a blocking task completed) note in PROGRESS.md that the blocker is resolved and the task is ready for `unblock` — do not edit the ledger to route around this.
-- NEVER print, log, or commit secrets (`QA_USER`, `QA_PASS`, tokens).
+- NEVER print, log, or commit secrets (`QA_USER`, `QA_PASS`, `QA_ACTOR_*_USER`, `QA_ACTOR_*_PASS`, tokens).
 - NEVER force-push; never push/merge to a protected branch; never weaken an existing test.
 - NEVER mark complete with a failed gate. Architectural ambiguity → `task fail --needs-human` + your question in PROGRESS.md. Do not guess.

@@ -42,6 +42,11 @@
 #   WORK_REPO_URL=git@github.com:org/work.git   # empty for QA/doc agents
 #   AGENT_DOMAIN=be                              # be | fe | full | qa | doc
 #   READ_REPOS="git@github.com:org/api.git ..."  # optional, read-only
+#   SECRET_PREFIX=<engagement-slug>              # QA agent only — namespaces
+#                                                # secret files in ~/.cstack-secrets/
+#                                                # (e.g. SECRET_PREFIX=acme → reads
+#                                                # ~/.cstack-secrets/acme-qa-user etc.)
+#                                                # Non-QA agents ignore this key.
 
 set -u
 
@@ -344,12 +349,46 @@ if [ ! -d "$ANSWER_WT/.git" ] && [ ! -f "$ANSWER_WT/.git" ]; then
   git -C "$CONTROL_DIR" worktree add -q "$ANSWER_WT" HEAD
 fi
 
-# QA credentials (staging only, never committed)
-if [ -f "$HOME/.cstack-secrets/dsti-qa-user" ]; then
-  export QA_USER
-  export QA_PASS
-  QA_USER="$(cat "$HOME/.cstack-secrets/dsti-qa-user")"
-  QA_PASS="$(cat "$HOME/.cstack-secrets/dsti-qa-pass")"
+# QA credentials (staging only, never committed) — QA agents only.
+# All other roles skip this block entirely; they have no business reading
+# secrets and should never have $QA_USER etc. in their environment.
+#
+# Secret file format (created by `bin/cstack-qa-secrets-init`):
+#   line 1 = username (email or login)
+#   line 2 = password
+#
+# Files (all chmod 600, in chmod 700 dir):
+#   ~/.cstack-secrets/${SECRET_PREFIX}-qa                 → $QA_USER, $QA_PASS
+#   ~/.cstack-secrets/${SECRET_PREFIX}-qa-actor-<role>    → $QA_ACTOR_<ROLE>_USER, $QA_ACTOR_<ROLE>_PASS
+#
+# $SECRET_PREFIX is read from the per-agent config (see header). If unset or
+# the files are missing, no env vars are exported and QA work will (correctly)
+# fail with qa_status: env_error.
+if [ "$AGENT_ROLE" = "qa" ]; then
+  SECRET_PREFIX="${SECRET_PREFIX:-}"
+  if [ -n "$SECRET_PREFIX" ] && [ -d "$HOME/.cstack-secrets" ]; then
+    # Single-user identity for /qa
+    _qa_file="$HOME/.cstack-secrets/${SECRET_PREFIX}-qa"
+    if [ -f "$_qa_file" ]; then
+      export QA_USER QA_PASS
+      QA_USER="$(sed -n '1p' "$_qa_file")"
+      QA_PASS="$(sed -n '2p' "$_qa_file")"
+    fi
+    unset _qa_file
+
+    # Per-role identities for /workflow-qa
+    for _actor_file in "$HOME/.cstack-secrets/${SECRET_PREFIX}-qa-actor-"*; do
+      [ -f "$_actor_file" ] || continue
+      _actor_role="${_actor_file##*/${SECRET_PREFIX}-qa-actor-}"
+      _actor_key="$(echo "$_actor_role" | tr '[:lower:]-' '[:upper:]_')"
+      _user_var="QA_ACTOR_${_actor_key}_USER"
+      _pass_var="QA_ACTOR_${_actor_key}_PASS"
+      export "$_user_var" "$_pass_var"
+      eval "$_user_var=\$(sed -n '1p' \"\$_actor_file\")"
+      eval "$_pass_var=\$(sed -n '2p' \"\$_actor_file\")"
+    done
+    unset _actor_file _actor_role _actor_key _user_var _pass_var
+  fi
 fi
 
 export AGENT_NAME AGENT_DOMAIN AGENT_ROLE CONTROL_DIR WORK_DIR READ_DIR
@@ -500,11 +539,27 @@ except Exception as e:
 print(json.dumps(m, separators=(",", ":")))
 PYEOF
 )
-  echo "$METRIC_LINE" >> "$METRICS_FILE"
-  git -C "$METRICS_WT" add METRICS.jsonl 2>/dev/null && \
-    git -C "$METRICS_WT" commit -qm "metrics(${AGENT_NAME}): ${RUN_ID}" 2>/dev/null && \
-    git -C "$METRICS_WT" push -q -u origin metrics 2>/dev/null || \
-    { git -C "$METRICS_WT" pull --rebase -q origin metrics 2>/dev/null; git -C "$METRICS_WT" push -q -u origin metrics 2>/dev/null || true; }
+  # Push metric to dedicated metrics branch.
+  # METRICS.jsonl is append-only: when push is rejected (concurrent agent push),
+  # we fetch + reset --hard (never rebase — rebase on JSONL causes stuck conflicts)
+  # then re-append our line and push again.
+  _push_metric() {
+    local line="$1"
+    echo "$line" >> "$METRICS_FILE"
+    git -C "$METRICS_WT" add METRICS.jsonl 2>/dev/null || return 0
+    git -C "$METRICS_WT" diff --cached --quiet 2>/dev/null && return 0   # nothing to commit
+    git -C "$METRICS_WT" commit -qm "metrics(${AGENT_NAME}): ${RUN_ID}" 2>/dev/null || return 0
+    if ! git -C "$METRICS_WT" push -q -u origin metrics 2>/dev/null; then
+      # Push rejected — reset to remote, re-append, re-commit, push once more
+      git -C "$METRICS_WT" fetch -q origin metrics 2>/dev/null || return 0
+      git -C "$METRICS_WT" reset --hard origin/metrics 2>/dev/null || return 0
+      echo "$line" >> "$METRICS_FILE"
+      git -C "$METRICS_WT" add METRICS.jsonl 2>/dev/null || return 0
+      git -C "$METRICS_WT" commit -qm "metrics(${AGENT_NAME}): ${RUN_ID}" 2>/dev/null || return 0
+      git -C "$METRICS_WT" push -q -u origin metrics 2>/dev/null || true
+    fi
+  }
+  _push_metric "$METRIC_LINE"
 
   # --- Circuit breaker ---
   if [ $EXIT_CODE -ne 0 ]; then
