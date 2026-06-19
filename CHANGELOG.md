@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Decision cleanup — automatic garbage collection (v7.1)
+
+The console server now cleans up decision files automatically on two schedules to prevent disk accumulation. Stale decisions older than 24 hours are removed at startup, and fresh decisions are removed 60 seconds after the bash wrapper reads them, giving the wrapper time to process the approval before cleanup.
+
+#### Added
+- Startup cleanup: scan `$SUPERVISOR_DECISIONS_DIR` at boot and delete decision files older than 24 hours
+- Post-approval cleanup: schedule `setTimeout` with 60_000ms to delete the decision file after console writes approval response
+- `POST /api/approve` endpoint accepting `agentName`, `requestId`, and `approved` decision status
+
+#### Changed
+- Console server now manages decision file lifecycle automatically, reducing manual cleanup burden
+- Decision files survive server restarts if newer than 24 hours (in-flight approvals are preserved)
+
 ### AI draft suggestions — Claude responses streamed via SSE (v7.1)
 
 The console now lets operators request AI-drafted task suggestions, streaming Claude Haiku's response token-by-token without blocking the UI. The stream aborts immediately if the browser closes the connection, preventing wasted token consumption. Use this when a task is blocked and you need a quick suggestion before deciding.

@@ -152,6 +152,16 @@ The console (or human operator) creates a response file with the same name, appe
 }
 ```
 
+### Decision cleanup — automatic garbage collection (v7.1)
+
+Decision files are ephemeral and cleaned up automatically on two schedules to prevent disk accumulation:
+
+**Startup cleanup (AC1/AC2):** When `server.ts` starts, it reads `$SUPERVISOR_DECISIONS_DIR` and deletes any decision files (both request and response `.json` files) that are older than 24 hours. Files newer than 24h are preserved. This handles cases where the console crashes or restarts — stale approvals from previous sessions are garbage-collected, but in-flight approvals created within the last 24h survive the restart.
+
+**Post-approval cleanup (AC3/AC4):** When the console writes an approval response file via `POST /api/approve`, it schedules a cleanup timer with `setTimeout(() => unlink(decisionFile), 60_000)`. This gives the bash wrapper approximately 60 seconds to read and process the decision before the file is removed. The unlink error is swallowed silently in case the wrapper already cleaned it up or the file was removed manually.
+
+**Constraint:** Startup cleanup runs synchronously before `server.listen()` is called, ensuring the server does not bind until the cleanup is complete.
+
 ---
 
 ## Console server — zero-config control repo discovery (v7.1)
@@ -240,6 +250,50 @@ If the rebase encounters an irresolvable conflict (e.g., two agents edited the s
 ### Operator impact
 
 Operators publishing messages via the console UI experience failures only when conflicts are genuinely unresolvable, not when they occur during brief windows of concurrent pushes. Temporary push rejections due to timing are handled transparently.
+
+---
+
+## Approval submission — gating bash commands via console decision (v7.1)
+
+When the bash wrapper detects a high-risk command, it writes a request to the decisions directory and waits for the console operator to approve or reject it. The `POST /api/approve` endpoint handles the approval submission and manages the decision file lifecycle.
+
+### Request and response
+
+**Endpoint:** `POST /api/approve`
+
+**Request body:**
+```json
+{
+  "agentName": "agent-be",
+  "requestId": "1718825000-1234-56789",
+  "approved": true
+}
+```
+
+**Response:** HTTP 200 on success:
+```json
+{
+  "ok": true
+}
+```
+
+**Error responses:**
+- HTTP 400: missing `agentName`, `requestId`, or `approved` field
+- HTTP 503: `SUPERVISOR_DECISIONS_DIR` env var not set
+
+### Decision file lifecycle
+
+When approval is submitted:
+
+1. **Write decision file:** The endpoint writes to `$SUPERVISOR_DECISIONS_DIR/<agentName>-<requestId>.decision.json` with the approval status (true/false).
+
+2. **Schedule cleanup:** A `setTimeout(() => unlink(decisionFile), 60_000)` timer is scheduled. This gives the bash wrapper approximately 60 seconds to poll and read the decision before the file is removed.
+
+3. **Cleanup on unlink:** If the unlink fails (file already gone, permission error), the error is silently swallowed — the wrapper may have cleaned it up or it may have been deleted manually.
+
+### Operator workflow
+
+Operators see a blocked-command card in the console UI when a high-risk command is detected. Clicking "Approve" or "Reject" calls `POST /api/approve` with the decision. The endpoint returns HTTP 200 immediately, allowing the UI to proceed. The bash wrapper receives the decision within <1 second and executes or blocks accordingly.
 
 ---
 
