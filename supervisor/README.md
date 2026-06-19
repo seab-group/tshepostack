@@ -9,6 +9,7 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `fleet.conf` | Declare all agents in one place |
 | `install.sh` | Register an agent as a launchd (macOS) or systemd (Linux) service |
 | `wake-listen.ts` | Supabase Realtime subscriber — wakes idle agents in <1s cross-machine |
+| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands) |
 | `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved) |
 
 ---
@@ -148,6 +149,61 @@ The console (or human operator) creates a response file with the same name, appe
   "approved": true
 }
 ```
+
+---
+
+## Console server — zero-config control repo discovery (v7.1)
+
+The console server reads task ledgers, mailboxes, and decision files from the control repository. To eliminate manual env setup, `supervisor/console/server.ts` auto-detects the control repo on startup.
+
+### How auto-detection works
+
+When you start the console server:
+
+1. **Check env override.** If `CONTROL_DIR` is set, use that path directly (backward-compatible fallback). Skip the next steps.
+
+2. **Resolve control repo URL.** Read `supervisor/fleet.conf` (same directory as run-agent.sh), skip comment lines and blank lines, take the first agent name. Then read the git remote URL:
+   ```bash
+   git -C ~/agents/<first-agent>/control remote get-url origin
+   ```
+   This gives the control repo URL without requiring a separate config file.
+
+3. **Clone if needed.** If `~/agents/console/control` does not exist, clone the control repo there:
+   ```bash
+   git clone <url> ~/agents/console/control
+   ```
+   This is a **blocking operation** — the HTTP server does not bind until the clone succeeds.
+
+4. **Skip if already present.** If `~/agents/console/control` already exists, start immediately without re-cloning.
+
+5. **Graceful failure.** If the clone fails (network error, bad URL, missing repo), the server exits with a non-zero code and logs a descriptive error. It does NOT start a server without the control repo.
+
+### Startup log example
+
+```bash
+$ bun run supervisor/console/server.ts
+[console] CONTROL_DIR not set, auto-detecting...
+[console] First agent from fleet.conf: agent-be
+[console] Reading control URL from ~/agents/agent-be/control/.git/config
+[console] Control URL: git@github.com:my-org/my-control-repo.git
+[console] Cloning control repo from git@github.com:my-org/my-control-repo.git...
+[console] Clone complete at ~/agents/console/control
+[console] Starting HTTP server on port 7842
+```
+
+### Setup implications
+
+**Old workflow** (before v7.1):
+```bash
+CONTROL_DIR=/path/to/control bun run supervisor/console/server.ts
+```
+
+**New workflow** (v7.1):
+```bash
+bun run supervisor/console/server.ts
+```
+
+The server now reads `fleet.conf` to find the control repo without manual setup. Operators upgrading from v7.0 can delete any hardcoded `CONTROL_DIR` exports in their systemd/launchd service files.
 
 ---
 
