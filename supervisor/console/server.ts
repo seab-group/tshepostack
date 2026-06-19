@@ -1,7 +1,11 @@
 // supervisor/console/server.ts — agent console HTTP server
 // Resolves the control repo (cloning if needed) then starts the server.
 // The HTTP port is never bound until the clone succeeds (CONS-002 AC3).
+// Uses node:http so req.url is the raw (un-normalised) request path — Bun.serve()
+// normalises dot segments before the fetch handler, defeating taskId validation (AC4).
 
+import { createServer } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, watch, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
@@ -23,14 +27,11 @@ function parseFleetConf(content: string): string[] {
     .filter(Boolean);
 }
 
-// Extract the raw path without dot-segment resolution so traversal attempts
-// reach the taskId validator rather than silently becoming a different path.
-function rawPath(url: string): string {
-  const afterScheme = url.indexOf("://");
-  const pathStart = afterScheme === -1 ? 0 : url.indexOf("/", afterScheme + 3);
-  if (pathStart === -1) return "/";
-  const end = url.indexOf("?", pathStart);
-  return end === -1 ? url.slice(pathStart) : url.slice(pathStart, end);
+// Extract path from node:http's raw un-normalised req.url (strips query string).
+function rawPath(url: string | undefined): string {
+  if (!url) return "/";
+  const end = url.indexOf("?");
+  return end === -1 ? url : url.slice(0, end);
 }
 
 async function resolveControlDir(agents: string[]): Promise<string> {
@@ -66,7 +67,7 @@ async function resolveControlDir(agents: string[]): Promise<string> {
     return clonePath;
   }
 
-  // CONS-002 AC1: clone is blocking; Bun.serve() is not called until done.
+  // CONS-002 AC1: clone is blocking; server.listen() is not called until done.
   console.log(`Cloning control repo from ${remoteUrl}...`);
   const cloneProc = Bun.spawn(["git", "clone", remoteUrl, clonePath], {
     stdout: "inherit",
@@ -83,11 +84,13 @@ async function resolveControlDir(agents: string[]): Promise<string> {
   return clonePath;
 }
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
+function sendJson(res: ServerResponse, body: unknown, status = 200): void {
+  const data = JSON.stringify(body);
+  res.writeHead(status, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(data),
   });
+  res.end(data);
 }
 
 // Read fleet.conf once — shared by control-dir resolution and agent validation.
@@ -104,84 +107,77 @@ try {
 const agentList = parseFleetConf(fleetContent);
 const validAgents = new Set(agentList); // AC3, AC6: Set built at startup
 
-// Resolve control dir (blocking — Bun.serve() is called only after this).
+// Resolve control dir (blocking — server.listen() is called only after this).
 const controlDir = await resolveControlDir(agentList);
 console.log(`Control dir: ${controlDir}`);
 
-// SSE client registry — one controller per connected browser tab.
-const sseClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
-const encoder = new TextEncoder();
+// SSE client registry — one ServerResponse per connected browser tab.
+const sseClients = new Set<ServerResponse>();
 
 function broadcast(event: string): void {
-  const chunk = encoder.encode(`data: ${event}\n\n`);
-  for (const ctrl of sseClients) {
+  for (const res of sseClients) {
     try {
-      ctrl.enqueue(chunk);
+      res.write(`data: ${event}\n\n`);
     } catch {
-      sseClients.delete(ctrl);
+      sseClients.delete(res);
     }
   }
 }
 
-// AC1: hostname:'127.0.0.1' — not reachable from any network interface.
-Bun.serve({
-  port: PORT,
-  hostname: HOSTNAME,
-  fetch(req: Request): Response {
-    const path = rawPath(req.url);
-    const { method } = req;
+// AC1: hostname '127.0.0.1' — not reachable from any network interface.
+const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+  const path = rawPath(req.url);
+  const method = req.method ?? "GET";
 
-    if (path === "/health") {
-      return json({ status: "ok", controlDir });
+  if (path === "/health") {
+    sendJson(res, { status: "ok", controlDir });
+    return;
+  }
+
+  // AC3: POST /api/mailbox/:agentName — reject names not in fleet.conf Set.
+  if (path.startsWith("/api/mailbox/") && method === "POST") {
+    const agentName = path.slice("/api/mailbox/".length).split("/")[0];
+    if (!validAgents.has(agentName)) {
+      sendJson(res, { error: "unknown agent" }, 400);
+      return;
     }
+    sendJson(res, { queued: true });
+    return;
+  }
 
-    // AC3: POST /api/mailbox/:agentName — reject names not in fleet.conf Set.
-    if (path.startsWith("/api/mailbox/") && method === "POST") {
-      const agentName = path.slice("/api/mailbox/".length).split("/")[0];
-      if (!validAgents.has(agentName)) {
-        return json({ error: "unknown agent" }, 400);
-      }
-      return json({ queued: true });
+  // AC4/AC5: POST /api/unblock/:taskId — reject IDs that fail the regex.
+  if (path.startsWith("/api/unblock/") && method === "POST") {
+    const taskId = path.slice("/api/unblock/".length).split("/")[0];
+    if (!TASK_ID_RE.test(taskId)) {
+      sendJson(res, { error: "invalid task ID" }, 400);
+      return;
     }
+    sendJson(res, { unblocked: taskId });
+    return;
+  }
 
-    // AC4/AC5: POST /api/unblock/:taskId — reject IDs that fail the regex.
-    if (path.startsWith("/api/unblock/") && method === "POST") {
-      const taskId = path.slice("/api/unblock/".length).split("/")[0];
-      if (!TASK_ID_RE.test(taskId)) {
-        return json({ error: "invalid task ID" }, 400);
-      }
-      return json({ unblocked: taskId });
-    }
+  // GET /api/events — SSE stream; each tab gets its own ServerResponse.
+  if (path === "/api/events") {
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    res.write(": ping\n\n");
+    sseClients.add(res);
+    req.on("close", () => sseClients.delete(res));
+    return; // keep connection open — do NOT call res.end()
+  }
 
-    // AC2/AC5: GET /api/events — SSE stream; each tab gets its own controller.
-    if (path === "/api/events") {
-      let thisCtrl: ReadableStreamDefaultController<Uint8Array>;
-      const stream = new ReadableStream<Uint8Array>({
-        start(ctrl) {
-          thisCtrl = ctrl;
-          sseClients.add(ctrl);
-          ctrl.enqueue(encoder.encode(": ping\n\n"));
-        },
-        cancel() {
-          sseClients.delete(thisCtrl);
-        },
-      });
-      return new Response(stream, {
-        headers: {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache",
-          connection: "keep-alive",
-        },
-      });
-    }
-
-    return new Response("Not Found", { status: 404 });
-  },
+  res.writeHead(404);
+  res.end("Not Found");
 });
 
-console.log(`Console server listening on http://${HOSTNAME}:${PORT}`);
+server.listen(PORT, HOSTNAME, () => {
+  console.log(`Console server listening on http://${HOSTNAME}:${PORT}`);
+});
 
-// AC1/AC4: one fs.watch per agent log directory; mkdir -p so missing dirs don't crash.
+// One fs.watch per agent log directory; mkdir -p so missing dirs don't crash.
 for (const agent of agentList) {
   const logDir = join(homedir(), "agents", agent, "logs");
   mkdirSync(logDir, { recursive: true });
