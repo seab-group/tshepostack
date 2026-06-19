@@ -11,6 +11,8 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `wake-listen.ts` | Supabase Realtime subscriber — wakes idle agents in <1s cross-machine |
 | `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands) |
 | `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved) |
+| `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support) |
+| `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces) |
 
 ---
 
@@ -204,6 +206,54 @@ bun run supervisor/console/server.ts
 ```
 
 The server now reads `fleet.conf` to find the control repo without manual setup. Operators upgrading from v7.0 can delete any hardcoded `CONTROL_DIR` exports in their systemd/launchd service files.
+
+---
+
+## Console UI — design system (v7.1)
+
+The console frontend uses a dark-theme design system coordinated with `docs/DESIGN.md`.
+
+### Typefaces
+- **Satoshi** (display/hero) — loaded from Fontshare CDN (weights: 400, 500, 700)
+- **DM Sans** (body/UI) — loaded from Google Fonts (weights: 400, 500, 600)
+- **JetBrains Mono** (data/code) — loaded from Google Fonts (weights: 400, 500)
+
+All fonts use `display=swap` to prevent invisible text during font load.
+
+### Design tokens
+Sourced from `docs/DESIGN.md` and defined in `:root` of `styles.css`:
+
+| Token | Value | Purpose |
+|-------|-------|---------|
+| `--base` | `#0C0C0C` | Page background |
+| `--surface` | `#141414` | Cards, sections |
+| `--surface-2` | `#1C1C1C` | Elevated surfaces |
+| `--border` | `#262626` | Dividers, outlines |
+| `--text` | `#FAFAFA` | Primary text |
+| `--text-dim` | `#A1A1AA` | Secondary text |
+| `--text-micro` | `#52525B` | Captions, hints |
+| `--amber` | `#F59E0B` | Accent (warnings, CTAs) |
+| `--green` | `#22C55E` | Success state |
+| `--red` | `#EF4444` | Error state |
+| `--blue` | `#3B82F6` | Info state |
+
+### Motion variables
+Used for consistent timing across transitions and animations:
+
+| Variable | Value | Use case |
+|----------|-------|----------|
+| `--dur-micro` | 75ms | Micro-interactions (hover, focus) |
+| `--dur-short` | 150ms | Quick transitions (fade, slide) |
+| `--dur-medium` | 250ms | Page transitions |
+| `--ease-enter` | `cubic-bezier(0.16, 1, 0.3, 1)` | Entrance animations (bounce) |
+| `--ease-exit` | `cubic-bezier(0.7, 0, 0.84, 0)` | Exit animations (ease-out) |
+
+### Visual effects
+- **Grain texture:** `body::after` pseudo-element with SVG `feTurbulence` at 0.03 opacity (fixed position, z-index 9999, non-interactive). Adds subtle surface texture without impacting readability.
+
+### Font sizing
+- Body text: 16px (see `docs/DESIGN.md` for rationale)
+- Button border-radius: 8px (consistent with accessibility guidelines)
 
 ---
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Console UI — design system refinement
+
+The agent console now uses the full gstack design system: corrected typography (16px body, 8px button radius), dark-mode color tokens, motion variables, and a grain texture for visual polish. Font CDN links load Satoshi (display), DM Sans (body), and JetBrains Mono (data) with `display=swap` to prevent layout shift.
+
+### Itemized changes
+
+#### Added
+- Console UI design tokens (colors, typography, spacing) sourced from `docs/DESIGN.md`
+- Font CDN links: Satoshi via Fontshare, DM Sans and JetBrains Mono via Google Fonts
+- Motion variables: `--dur-micro` (75ms), `--dur-short` (150ms), `--dur-medium` (250ms), `--ease-enter`, `--ease-exit`
+- Grain texture overlay (0.03 opacity SVG feTurbulence) for visual materiality
+
+#### Changed
+- Body font size from 14px to 16px for improved readability
+- Button border-radius from 5px to 8px for consistency with design guidelines
+
+---
+
 ## [1.57.7.0] - 2026-06-08
 
 ## **Every plan review now ends by telling you, in one line, whether anything is still unresolved.**
