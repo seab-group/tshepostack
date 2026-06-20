@@ -85,6 +85,22 @@ The console server now delivers live agent events to all connected browsers usin
 #### Changed
 - Console server now gates live approval updates through SSE push instead of relying solely on polling
 
+### Fleet status endpoint — real-time agent fleet state (v7.1)
+
+The console can now query and monitor the current state of all agents in the fleet via `GET /api/fleet`. This endpoint returns structured data from each agent's `live.json` (session details) and `presence.json` (agent state), and the server broadcasts `fleet-update` SSE events when fleet state changes, triggering automatic UI refresh without polling.
+
+#### Added
+- `GET /api/fleet` endpoint returning JSON array of `AgentStatus` objects (name, state, task, sessionStart, lastTool, lastSummary, ended)
+- `readFleetStatus()` utility function reading `live.json` + `presence.json` per agent with safe defaults (null fields for missing sessions, "stopped" state for missing presence)
+- `AgentStatus` TypeScript type for fleet status schema
+- `fleet-update` SSE event broadcast when any agent's `live.json` changes (complements existing `live-events.jsonl` watching)
+- Extracted `makeWatchHandler()` utility exposing fs.watch callback logic, enabling tests to verify SSE broadcast payloads without real filesystem events
+
+#### Changed
+- fs.watch callback now listens for both `live-events.jsonl` (approval/log events) and `live.json` (fleet state changes)
+- `live.json` changes trigger `fleet-update` events; other changes remain invisible to SSE
+- Ended sessions now exclude stale `task` fields from fleet status (AC3: if `ended: true`, then `task: null`)
+
 ### Console UI — design system refinement
 
 The agent console now uses the full gstack design system: corrected typography (16px body, 8px button radius), dark-mode color tokens, motion variables, and a grain texture for visual polish. Font CDN links load Satoshi (display), DM Sans (body), and JetBrains Mono (data) with `display=swap` to prevent layout shift.

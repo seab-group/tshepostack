@@ -14,7 +14,7 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support) |
 | `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility) |
 | `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces) |
-| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation, SSE helpers (v7.1) |
+| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation, fleet status reading, SSE helpers, watch handler (v7.1) |
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
 | `console/server.test.ts` | Bun tests for endpoint security — taskId regex validation, agent name validation, needs_human endpoint (v7.1) |
@@ -460,6 +460,108 @@ The console delivers live agent events to connected browsers without polling, us
 ### Use case
 
 When an agent writes an approval request or task log line, the console receives it within 1 second on all open browser tabs without a page reload.
+
+---
+
+## Fleet status endpoint — real-time agent fleet state (v7.1)
+
+The console lets operators query the current state of all agents in the fleet, showing which agents are working, idle, or have never run. The `GET /api/fleet` endpoint returns a structured snapshot of agent status from `live.json` and `presence.json` files, and complementary `fleet-update` SSE events notify browsers when the fleet state changes.
+
+### How it works
+
+1. **Scheduled querying.** When the console UI loads, it fetches `GET /api/fleet` to populate the fleet status table. This gives operators an immediate view of which agents are active.
+
+2. **Live updates via SSE.** The server watches each agent's `~/agents/<agent>/logs/live.json` file. When live.json changes (e.g., agent starts a new task, session ends), the fs.watch callback broadcasts a `fleet-update` SSE event to connected browsers, triggering a re-fetch of `/api/fleet` without polling.
+
+3. **Data sources.** Each agent's status combines two files:
+   - `~/agents/<agent>/control/mailboxes/presence/<agent>.json` — agent state (e.g., "working", "idle", "stopped")
+   - `~/agents/<agent>/logs/live.json` — current session details (task, start time, last tool, summary)
+
+### Request and response
+
+**Endpoint:** `GET /api/fleet`
+
+**Response:** HTTP 200 with `Content-Type: application/json` and a JSON array of agent status objects:
+
+```json
+[
+  {
+    "name": "agent-be",
+    "state": "working",
+    "task": "CONS-012",
+    "sessionStart": "2026-06-20T10:00:00Z",
+    "lastTool": "Bash",
+    "lastSummary": "Implementing fleet endpoint",
+    "ended": false
+  },
+  {
+    "name": "agent-qa",
+    "state": "stopped",
+    "task": null,
+    "sessionStart": null,
+    "lastTool": null,
+    "lastSummary": null,
+    "ended": true
+  }
+]
+```
+
+### Handling missing data
+
+**No live.json (agent has never run — AC2):**
+```json
+{
+  "name": "agent-fe",
+  "state": "stopped",
+  "task": null,
+  "sessionStart": null,
+  "lastTool": null,
+  "lastSummary": null,
+  "ended": true
+}
+```
+
+**Ended session (AC3):** When `live.json` contains `"ended": true`, the `task` field is set to `null` (even if live.json includes a stale task ID). This mirrors the watch.ts fix from an earlier version and prevents displaying outdated task assignments after a session ends.
+
+```json
+{
+  "name": "agent-qa",
+  "state": "running",
+  "task": null,
+  "sessionStart": "2026-06-20T09:00:00Z",
+  "lastTool": "Read",
+  "lastSummary": "Session ended",
+  "ended": true
+}
+```
+
+**Missing presence.json (AC5):** If an agent's presence file is unreadable or missing, the `state` defaults to `"stopped"` (not an error). This prevents HTTP errors when agents have not yet written their status file.
+
+### SSE fleet-update events
+
+When `live.json` changes for any agent in the fleet, the fs.watch callback broadcasts a `fleet-update` event:
+
+```javascript
+{
+  "type": "fleet-update",
+  "agent": "agent-be",
+  "ts": 1718909802000
+}
+```
+
+The console client receives this event and re-fetches `/api/fleet` to reflect the latest state. This eliminates the need for polling and keeps the fleet status table synchronized with agent activity in real-time.
+
+### Data fields reference
+
+| Field | Source | Type | Semantics |
+|-------|--------|------|-----------|
+| `name` | Agent name from fleet.conf | string | Agent identifier (e.g., `agent-be`) |
+| `state` | `presence.json` .state field | string | Current agent state (e.g., "working", "idle", "stopped") |
+| `task` | `live.json` .task field | string \| null | Current task ID if session is active and ended=false; null if no session or ended=true |
+| `sessionStart` | `live.json` .session_start field | string \| null | ISO 8601 timestamp when this session started; null if no session |
+| `lastTool` | `live.json` .last_tool field | string \| null | Last tool called by the agent (e.g., "Bash", "Read", "Edit"); null if no session |
+| `lastSummary` | `live.json` .last_summary field | string \| null | Last summary or status message from the agent; null if no session |
+| `ended` | `live.json` .ended field | boolean | True if the session has ended, false if currently active |
 
 ---
 
