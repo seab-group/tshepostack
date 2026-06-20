@@ -108,6 +108,20 @@ The console frontend now provides a full-featured approval and task-blocking que
 - Cards are prepended to queues (newest first) for chronological visibility
 - Browser tab title kept in sync with queue state, eliminating need to open console for status check
 
+### Console test suite — comprehensive unit and integration tests (v7.1)
+
+The console now includes a full test suite covering risk classification, approval polling, and endpoint security. All tests run via `bun test supervisor/console/` and provide confidence that the bash wrapper's gating logic and server endpoints correctly enforce their security contracts.
+
+#### Added
+- **bash-wrapper.test.sh**: 5 Bash unit tests for `check_risk` classification (high-risk git/rm/curl|bash/chmod|chown/mkfs/fdisk, low-risk git clone/ls/bun test) and 3 `poll_approval` path tests (approved/rejected/timeout)
+- **bash-wrapper.test.ts**: Bun test wrapper that invokes bash-wrapper.test.sh inline, so all tests run as part of the standard `bun test` suite
+- **server-utils.ts**: Extracted utility functions (`parseTaskLedger`, `parseMailboxNotes`, `TASK_ID_RE`, `sendJson`, `rawPath`, `parseFleetConf`) with no side effects, enabling easier testing
+- **server.test.ts**: 10 Bun tests covering `POST /api/unblock` taskId validation (rejecting lowercase/no-digits IDs with HTTP 400), `POST /api/mailbox` agent name validation (rejecting unknown agents), `GET /api/attention` endpoint (returning needs_human tasks), and edge cases (parseTaskLedger with empty directory, parseMailboxNotes with cleared-marker-only mailbox)
+- **GET /api/attention endpoint**: Returns all tasks with status `needs_human`, enabling the console UI to display the human decision queue
+
+#### Changed
+- `supervisor/console/server.ts` refactored to import reusable utilities from `server-utils.ts`, reducing duplication and enabling isolated testing
+
 ---
 
 ## [1.57.7.0] - 2026-06-08

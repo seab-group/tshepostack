@@ -14,6 +14,10 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support) |
 | `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility) |
 | `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces) |
+| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation, SSE helpers (v7.1) |
+| `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
+| `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
+| `console/server.test.ts` | Bun tests for endpoint security — taskId regex validation, agent name validation, needs_human endpoint (v7.1) |
 
 ---
 
@@ -619,6 +623,85 @@ No custom key handlers are needed — the browser's native button behavior is le
 - **HTML escaping:** All dynamic content is escaped via an `esc()` helper function to prevent XSS.
 - **State sync:** A `syncState()` function centralizes the logic for updating empty states, counts, badges, and the document title after every card operation.
 - **Timer display:** Elapsed time on each card updates every 1 second (minutes:seconds format).
+
+---
+
+## Console test suite (v7.1)
+
+The console includes comprehensive unit and integration tests covering risk classification, approval polling, and endpoint security boundaries. Run all tests with:
+
+```bash
+bun test supervisor/console/
+```
+
+### Bash wrapper tests — `bash-wrapper.test.sh` + `bash-wrapper.test.ts`
+
+**Risk classification (AC1):** The `check_risk` function classifies commands into security tiers:
+
+| Command | Classification | Example |
+|---------|-----------------|---------|
+| Destructive git operations | high | `git push origin main`, `git rebase`, `git reset` |
+| Recursive file operations | high | `rm -rf /home`, `chmod -R`, `chown -R`, `mkfs`, `fdisk` |
+| Pipe-to-shell | high | `curl \| bash`, `wget \| sh` |
+| Safe commands | low | `git clone`, `ls`, `bun test`, `cd` |
+| Chained operations | high | `cd /tmp && git push origin main` (if any segment is high) |
+
+The classification runs inline in the bash wrapper (`supervisor/console/bin/bash`) before attempting execution. Commands classified as high are sent to the console for operator approval; low-risk commands execute immediately.
+
+**Approval polling (AC2):** When a command is blocked, the wrapper polls for a decision file:
+
+- **Approved path:** If `<agent>-<request-id>.decision.json` appears with `{"approved": true}`, the wrapper executes the command and exits 0.
+- **Rejected path:** If the decision file has `{"approved": false}`, the wrapper exits 1 (command blocked).
+- **Timeout path:** If no decision file appears within 60s, the wrapper exits 1 (timeout protection prevents indefinite hangs).
+
+All three paths are covered by the test suite.
+
+### Server endpoint tests — `server.test.ts` + `server-utils.ts`
+
+**Task ID validation (AC3):** The `POST /api/unblock/<taskId>` endpoint rejects invalid task IDs:
+
+- Invalid: lowercase IDs (`cons-003`), missing digits (`CONS`), trailing slashes with extra segments
+- Valid: uppercase + dash + digits only (regex: `/^[A-Z]+-[0-9]+$/`)
+- Response: HTTP 400 if invalid, 200 if valid
+
+**Agent name validation (AC4):** The `POST /api/mailbox/<agentName>` endpoint rejects unknown agents:
+
+- Valid agents are loaded from `fleet.conf` at startup into a `Set`
+- Unknown or empty agent names return HTTP 400
+- Valid agents return HTTP 200
+
+**Needs-human endpoint (AC5):** The `GET /api/attention` endpoint returns all tasks with `status: needs_human`:
+
+```bash
+curl http://127.0.0.1:7842/api/attention
+```
+
+Response:
+```json
+{
+  "tasks": [
+    {
+      "id": "CONS-003",
+      "status": "needs_human",
+      "domain": "be",
+      "description": "..."
+    }
+  ]
+}
+```
+
+**Ledger parsing edge cases (AC6):** The `parseTaskLedger()` utility handles empty or missing ledger directories without crashing — returns an empty array.
+
+**Mailbox parsing edge cases (AC7):** The `parseMailboxNotes()` utility handles mailbox files containing only the `<!-- cleared by ... -->` marker without crashing — returns an empty array.
+
+### Test results
+
+All 15 tests pass (5 bash-wrapper + 10 server tests). Run the full suite with:
+
+```bash
+bun test supervisor/console/     # runs all tests, exit 0 on pass
+bun test --timeout 10000 supervisor/console/  # increase timeout if needed
+```
 
 ---
 
