@@ -193,15 +193,20 @@ for raw in sys.stdin:
     # result: final event with cost, usage, and summary text
     elif ev_type == "result":
         result_event = ev
-        live["cost_usd"]      = ev.get("cost_usd") or ev.get("total_cost_usd")
+        live["cost_usd"]             = ev.get("cost_usd") or ev.get("total_cost_usd")
         usage = ev.get("usage") or {}
-        live["input_tokens"]  = usage.get("input_tokens")
-        live["output_tokens"] = usage.get("output_tokens")
+        live["input_tokens"]         = usage.get("input_tokens")
+        live["output_tokens"]        = usage.get("output_tokens")
+        live["cache_creation_tokens"] = usage.get("cache_creation_input_tokens")
 
 # --- Session ended ---
 
 duration_s = int(time.time() - session_start_ts)
 live["ended"] = True
+# Flag when session ended without a result event (timeout/SIGTERM): cost and
+# token counts will be missing. The metrics report should show "unrecorded"
+# rather than $0, so downstream analysis isn't misled.
+live["cost_unrecorded"] = not bool(result_event)
 atomic_write(LIVE_FILE, live)
 
 append_event({"ts": now_iso(), "agent": AGENT_NAME, "type": "session_end",
@@ -214,13 +219,15 @@ update_presence({"state": "idle", "task": None, "last_tool": None, "last_summary
 result_text = result_event.get("result", "") or " ".join(all_text_parts)
 usage       = result_event.get("usage") or {}
 print(json.dumps({
-    "result":        result_text,
-    "is_error":      result_event.get("is_error", False),
-    "total_cost_usd": live["cost_usd"],
-    "num_turns":     live["turn"],
+    "result":          result_text,
+    "is_error":        result_event.get("is_error", False),
+    "total_cost_usd":  live["cost_usd"],
+    "cost_unrecorded": live["cost_unrecorded"],
+    "num_turns":       live["turn"],
     "usage": {
-        "input_tokens":            usage.get("input_tokens",  live["input_tokens"]),
-        "output_tokens":           usage.get("output_tokens", live["output_tokens"]),
-        "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+        "input_tokens":              usage.get("input_tokens",  live["input_tokens"]),
+        "output_tokens":             usage.get("output_tokens", live["output_tokens"]),
+        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", live.get("cache_creation_tokens")),
+        "cache_read_input_tokens":   usage.get("cache_read_input_tokens"),
     },
 }))

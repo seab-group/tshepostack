@@ -9,6 +9,8 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `fleet.conf` | Declare all agents in one place |
 | `install.sh` | Register an agent as a launchd (macOS) or systemd (Linux) service |
 | `wake-listen.ts` | Supabase Realtime subscriber — wakes idle agents in <1s cross-machine |
+| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands) |
+| `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved) |
 
 ---
 
@@ -100,6 +102,108 @@ The v7 supervisor adds five layers so agents respond to each other in seconds ra
 | Parallel answer sessions | Detects incoming `awaiting_info` questions mid-session, spawns a focused answer session in a separate git worktree | ~10s |
 
 End-to-end round-trip for an `awaiting_info` Q&A: **~15–30 seconds** (dominated by LLM response time), down from potentially hours with the v6 async mailbox-only approach.
+
+---
+
+## Console intercept — risk-gated Bash tool access (v7.1)
+
+Agents use the Claude Bash tool for all shell operations. To prevent accidental or malicious high-risk commands from executing silently, a thin wrapper at `supervisor/console/bin/bash` intercepts Bash invocations and gates destructive operations.
+
+### How it works
+
+1. **Prepended to PATH.** `run-agent.sh` exports `$SUPERVISOR_DIR/console/bin` first on PATH, so every Bash tool call (from Claude) hits the wrapper before the system bash.
+
+2. **Risk classification.** The wrapper identifies high-risk patterns anywhere in the command string (including chained commands like `cd /tmp && git push`):
+   - Git mutations: `git push`, `git rebase`, `git reset`
+   - Destructive file ops: `rm -rf`, `chmod -R`, `chown -R`
+   - Data/device access: `curl | bash`, `wget | bash`, `dd if=`, `mkfs`, `fdisk`
+
+3. **Low-risk pass-through.** Commands like `git clone`, `ls`, `npm install` execute immediately without gating.
+
+4. **High-risk intercept.** When a high-risk command is detected:
+   - Wrapper writes a JSON request file to `$SUPERVISOR_DECISIONS_DIR/<agent>-<request-id>.json`
+   - Logs the command to stderr: `[bash-wrapper] HIGH RISK — blocked, awaiting console decision`
+   - Polls for an approval response file (`<agent>-<request-id>.decision.json`)
+   - If `{"approved": true}` — executes the command
+   - If `{"approved": false}` or timeout — blocks and exits with code 1
+
+5. **Fallback when console is down.** If `$SUPERVISOR_DECISIONS_DIR` is not set, the wrapper blocks with a warning and does NOT execute the command. This prevents silent execution when the console is unavailable.
+
+### Accessing decision files
+
+Decision files are stored at `$SUPERVISOR_DIR/console/decisions/<agent>-<id>.json`:
+
+```json
+{
+  "command": "git push origin main",
+  "risk": "high",
+  "agent": "agent-be",
+  "request_id": "1718825000-1234-56789"
+}
+```
+
+The console (or human operator) creates a response file with the same name, appending `.decision`:
+
+```json
+{
+  "approved": true
+}
+```
+
+---
+
+## Console server — zero-config control repo discovery (v7.1)
+
+The console server reads task ledgers, mailboxes, and decision files from the control repository. To eliminate manual env setup, `supervisor/console/server.ts` auto-detects the control repo on startup.
+
+### How auto-detection works
+
+When you start the console server:
+
+1. **Check env override.** If `CONTROL_DIR` is set, use that path directly (backward-compatible fallback). Skip the next steps.
+
+2. **Resolve control repo URL.** Read `supervisor/fleet.conf` (same directory as run-agent.sh), skip comment lines and blank lines, take the first agent name. Then read the git remote URL:
+   ```bash
+   git -C ~/agents/<first-agent>/control remote get-url origin
+   ```
+   This gives the control repo URL without requiring a separate config file.
+
+3. **Clone if needed.** If `~/agents/console/control` does not exist, clone the control repo there:
+   ```bash
+   git clone <url> ~/agents/console/control
+   ```
+   This is a **blocking operation** — the HTTP server does not bind until the clone succeeds.
+
+4. **Skip if already present.** If `~/agents/console/control` already exists, start immediately without re-cloning.
+
+5. **Graceful failure.** If the clone fails (network error, bad URL, missing repo), the server exits with a non-zero code and logs a descriptive error. It does NOT start a server without the control repo.
+
+### Startup log example
+
+```bash
+$ bun run supervisor/console/server.ts
+[console] CONTROL_DIR not set, auto-detecting...
+[console] First agent from fleet.conf: agent-be
+[console] Reading control URL from ~/agents/agent-be/control/.git/config
+[console] Control URL: git@github.com:my-org/my-control-repo.git
+[console] Cloning control repo from git@github.com:my-org/my-control-repo.git...
+[console] Clone complete at ~/agents/console/control
+[console] Starting HTTP server on port 7842
+```
+
+### Setup implications
+
+**Old workflow** (before v7.1):
+```bash
+CONTROL_DIR=/path/to/control bun run supervisor/console/server.ts
+```
+
+**New workflow** (v7.1):
+```bash
+bun run supervisor/console/server.ts
+```
+
+The server now reads `fleet.conf` to find the control repo without manual setup. Operators upgrading from v7.0 can delete any hardcoded `CONTROL_DIR` exports in their systemd/launchd service files.
 
 ---
 

@@ -10,7 +10,7 @@ preamble-tier: standard
 
 ## When to invoke this skill
 
-Turns a rough prompt, a docs/TODO.md item, or a batch of open TODO items into properly-formed task specs (tasks/<ID>.md with frontmatter, ACs mapped to real checks) ready for `kernel/task sync`. Use when the user describes new work in plain English, asks to draft a spec for a TODO item, or asks to clear/triage an open backlog. Drafts only — never registers tasks or touches ledger/ directly; that's `kernel/task sync`'s job, run by the human after review.
+Turns a rough prompt, a docs/designs/AGENT_CONSOLE.md item, or a batch of open TODO items into properly-formed task specs (tasks/<ID>.md with frontmatter, ACs mapped to real checks) ready for `kernel/task sync`. Use when the user describes new work in plain English, asks to draft a spec for a TODO item, or asks to clear/triage an open backlog. Drafts only — never registers tasks or touches ledger/ directly; that's `kernel/task sync`'s job, run by the human after review.
 
 ## Preamble (run first)
 

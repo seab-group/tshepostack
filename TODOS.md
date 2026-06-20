@@ -62,6 +62,56 @@ v1.47.0.0 baselines retained in `test/fixtures/` for the v1→v2 audit trail. Th
 captured skill bytes match `origin/main` exactly (the rebasing branch left every
 SKILL.md untouched). `bun test` is green again.
 
+## Agent Console follow-ups (filed via /plan-eng-review on the AGENT_CONSOLE.md v0 plan)
+
+### P3: Design macOS push notification text + click behavior (console D2.2)
+
+**What:** The CEO scope accepted macOS push notifications (D2.2: `osascript` fires on new `needs_human` or `approval_requested` events). The notification text and click behavior are undesigned.
+
+**Why:** Without specifying the notification body, the implementer will ship generic text ("new event detected"). The click should deep-link into the browser tab at the right scroll position. This is a UX decision that affects whether the notification is actually useful.
+
+**Pros:** Correct notification text ("agent-fe needs a decision on FEAT-011 — open console") and click-to-focus behavior make the notification the primary wakeup signal instead of a tab-switch interrupt.
+**Cons:** Click-to-focus requires `open http://localhost:7842` via `osascript` or a custom URL scheme. Non-trivial to implement cross-browser.
+
+**Context:** Surfaced by /plan-design-review (2026-06-19). D2.2 accepted in CEO review. Not blocking v0 (macOS notification fires even without click behavior). Spec before v1 ships.
+
+**Effort estimate:** S (human team) → XS (CC+gstack)
+**Priority:** P3
+**Depends on / blocked by:** T4 (SSE push for approval_requested events). Unblock when v0 is validated.
+
+### P3: Decide fleet broadcast input position in v0 layout (console D2.4)
+
+**What:** CEO scope D2.4 accepted "Ask the fleet…" broadcast input in the top bar. The v0 layout has no top bar (single-column, no sidebar). The fleet broadcast is designed for the v1 layout with a full header bar. Where does it live in v0?
+
+**Why:** If v0 is used beyond a single ECOBA session, fleet broadcast becomes useful before v1 ships. Its absence in v0 forces fallback to git mailbox editing.
+
+**Pros:** Adding a simple broadcast textarea at the bottom of the v0 page takes ~1h. No sidebar required.
+**Cons:** Bottom placement is less visible than the header bar in v1. May train bad habits for where to look.
+
+**Context:** Surfaced by /plan-design-review (2026-06-19). v0 spec explicitly excludes sidebar. The top-bar input from the v1 wireframe is at /tmp/gstack-sketch-console.html. Decide before v1 design starts.
+
+**Effort estimate:** XS (design decision) → S (CC+gstack if building)
+**Priority:** P3
+**Depends on / blocked by:** v0 validation (at least one ECOBA session completed).
+
+### P3: Investigate --permission-prompt-tool as a v2 replacement for the bash wrapper approval gate
+
+**What:** Claude Code's `--permission-prompt-tool` flag lets you specify an MCP server that handles permission prompts before any tool executes — including Bash. This would be a native approval gate instead of the PATH-manipulation bash wrapper approach.
+
+**Why:** The bash wrapper works but is a hack — it requires naming the wrapper `bash`, prepending to PATH, and relies on `BASH_SOURCE[0]` detection. The permission-prompt-tool approach would be cleaner, work for non-Bash tools (Edit, Write), and not require any PATH manipulation.
+
+**Pros:** Native hook point, no PATH manipulation, works for all tool types, no BASH_SOURCE workarounds.
+
+**Cons:** `--permission-prompt-tool` is not yet stable or well-documented in Claude Code. MCP server adds infrastructure. May change between Claude Code versions.
+
+**Context:** Surfaced by outside voice during /plan-eng-review (2026-06-19). The bash wrapper was chosen in CEO review CM1 and is correct for v0. Investigate for v2 after v0 is validated in production. See `docs/designs/AGENT_CONSOLE.md`.
+
+**Effort estimate:** M (human team) → S (CC+gstack, once the API stabilizes)
+**Priority:** P3
+**Depends on / blocked by:** Claude Code stabilizing the --permission-prompt-tool interface. Unblock: run `claude --help | grep permission` on each release to track availability.
+
+---
+
 ## Token-reduction follow-ups (Phase B, filed via /plan-eng-review on the plan-ceo-review carve)
 
 ### P3: Carve the always-loaded `{{PREAMBLE}}` reference blocks into an on-demand doc
