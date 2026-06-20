@@ -72,8 +72,6 @@ The console server now delivers live agent events to all connected browsers usin
 
 The agent console now uses the full gstack design system: corrected typography (16px body, 8px button radius), dark-mode color tokens, motion variables, and a grain texture for visual polish. Font CDN links load Satoshi (display), DM Sans (body), and JetBrains Mono (data) with `display=swap` to prevent layout shift.
 
-### Itemized changes
-
 #### Added
 - Console UI design tokens (colors, typography, spacing) sourced from `docs/DESIGN.md`
 - Font CDN links: Satoshi via Fontshare, DM Sans and JetBrains Mono via Google Fonts
@@ -83,6 +81,46 @@ The agent console now uses the full gstack design system: corrected typography (
 #### Changed
 - Body font size from 14px to 16px for improved readability
 - Button border-radius from 5px to 8px for consistency with design guidelines
+
+### Console UI — Interactive features and queue management (v7.1)
+
+The console frontend now provides a full-featured approval and task-blocking queue interface with animations, accessibility, and dynamic content updates. Operators see live cards as tasks arrive via SSE, manage approvals and decisions with one-click action buttons, and receive real-time feedback via animations and state badges.
+
+#### Added
+- Two-section layout: separate "Human Attention Queue" (blocked tasks) and "Approval Queue" (pending bash commands)
+- Per-section empty states: "No blocked agents" and "No pending approvals" with checkmark icons
+- All-clear banner: full-width "All clear — agents are running." when both queues are empty
+- Card entry animation: slideIn 250ms with bounce easing (`--ease-enter`) when cards arrive via SSE
+- Card exit animation: fadeOut 150ms before DOM removal when operator approves/rejects
+- Spinner and double-click protection: Approve/Reject buttons show spinner and become disabled immediately, preventing accidental duplicate submissions
+- Failure count badge: amber pill badge ("⚠ blocked N times") appears on tasks with `failure_count >= 2`
+- AI draft panel: collapsible section with amber disclaimer, streamed draft text, and "Use this draft ↑" button to copy suggestions into operator textarea
+- Visible textarea label: semantic `<label>` element (not placeholder-only) linked to the decision textarea
+- `aria-required="true"` on textarea: signals assistive technologies that input is required
+- Dynamic document title: browser tab shows "(N) Fleet Console" when pending items exist, or "Fleet Console — All clear" when idle
+- SSE reconnect banner: amber warning appears when connection drops, disappears on reconnect
+- Keyboard accessibility: native `<button>` elements respond to Enter key without custom handlers
+- HTML escaping: all user-supplied and dynamic content escaped to prevent XSS
+- Elapsed time timer: each card displays "Nm SSs" format, updating every second
+
+#### Changed
+- Console UI now validates all user interactions through the server before mutating DOM state
+- Cards are prepended to queues (newest first) for chronological visibility
+- Browser tab title kept in sync with queue state, eliminating need to open console for status check
+
+### Console test suite — comprehensive unit and integration tests (v7.1)
+
+The console now includes a full test suite covering risk classification, approval polling, and endpoint security. All tests run via `bun test supervisor/console/` and provide confidence that the bash wrapper's gating logic and server endpoints correctly enforce their security contracts.
+
+#### Added
+- **bash-wrapper.test.sh**: 5 Bash unit tests for `check_risk` classification (high-risk git/rm/curl|bash/chmod|chown/mkfs/fdisk, low-risk git clone/ls/bun test) and 3 `poll_approval` path tests (approved/rejected/timeout)
+- **bash-wrapper.test.ts**: Bun test wrapper that invokes bash-wrapper.test.sh inline, so all tests run as part of the standard `bun test` suite
+- **server-utils.ts**: Extracted utility functions (`parseTaskLedger`, `parseMailboxNotes`, `TASK_ID_RE`, `sendJson`, `rawPath`, `parseFleetConf`) with no side effects, enabling easier testing
+- **server.test.ts**: 10 Bun tests covering `POST /api/unblock` taskId validation (rejecting lowercase/no-digits IDs with HTTP 400), `POST /api/mailbox` agent name validation (rejecting unknown agents), `GET /api/attention` endpoint (returning needs_human tasks), and edge cases (parseTaskLedger with empty directory, parseMailboxNotes with cleared-marker-only mailbox)
+- **GET /api/attention endpoint**: Returns all tasks with status `needs_human`, enabling the console UI to display the human decision queue
+
+#### Changed
+- `supervisor/console/server.ts` refactored to import reusable utilities from `server-utils.ts`, reducing duplication and enabling isolated testing
 
 ---
 

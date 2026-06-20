@@ -12,7 +12,12 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE) |
 | `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved) |
 | `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support) |
+| `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility) |
 | `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces) |
+| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation, SSE helpers (v7.1) |
+| `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
+| `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
+| `console/server.test.ts` | Bun tests for endpoint security — taskId regex validation, agent name validation, needs_human endpoint (v7.1) |
 
 ---
 
@@ -503,6 +508,200 @@ Used for consistent timing across transitions and animations:
 ### Font sizing
 - Body text: 16px (see `docs/DESIGN.md` for rationale)
 - Button border-radius: 8px (consistent with accessibility guidelines)
+
+---
+
+## Console UI — Interactive features and polish (v7.1)
+
+The `console.js` file implements a vanilla JavaScript frontend for the console UI, providing real-time task and approval queue management with animations, accessibility, and dynamic content updates via SSE.
+
+### Two-section layout with per-section empty states
+
+The console divides operator workload into two independent sections:
+
+**Human Attention Queue** — Tasks blocked waiting for operator decision (e.g., tasks that failed and need human input).
+- Empty state (AC1): Shows "No blocked agents" when the queue is empty, replacing the old single "All clear" banner.
+- Header includes an amber badge showing count when populated (e.g., "0 blocked").
+
+**Approval Queue** — High-risk Bash commands awaiting approval.
+- Empty state (AC1): Shows "No pending approvals" when the queue is empty.
+- Header includes a red badge showing count when populated (e.g., "0 pending").
+
+**All-clear banner (AC2):** When BOTH queues are empty simultaneously, a full-width "All clear — agents are running." banner spans the entire console, replacing the individual empty states. This single banner unifies the visual experience when the fleet is fully idle.
+
+### Card animations
+
+Cards enter and exit the DOM with CSS animations driven by JavaScript:
+
+**Entry animation (AC3):** When a new card arrives via SSE, JavaScript prepends it with the `card-new` class. CSS plays a `slideIn 250ms var(--ease-enter)` animation, using the cubic-bezier bounce easing from the design tokens for a snappy entrance.
+
+**Exit animation (AC4):** When an operator approves or rejects a card, JavaScript:
+1. Adds the `card-exit` class to trigger a `fadeOut 150ms forwards` animation
+2. Waits 150ms for the fade to complete
+3. Removes the card from the DOM
+4. Updates queue counts and syncs the UI state
+
+This two-phase exit prevents abrupt disappearance and gives operators visual feedback that their action was registered.
+
+**Spinner and disabled state (AC4a):** When clicking Approve/Reject, the button immediately adds the `loading` class (CSS shows a spinner) and becomes disabled to prevent double-clicks. The disabled state applies to both buttons until the server responds.
+
+### Failure count badge (AC5)
+
+When a task in the Human Attention Queue has `failure_count >= 2`, a amber pill badge appears in the card's meta row (top-right area):
+
+```
+⚠ blocked 3 times
+```
+
+The badge uses the `--amber` color token and includes both the warning icon and the count. This provides at-a-glance visibility into which tasks have been problematic.
+
+### AI draft panel (AC6)
+
+Tasks that have an AI-drafted suggestion show a collapsible "AI Draft" button. Clicking it reveals a panel below the acceptance criteria with:
+
+1. **Collapsible container:** Toggling the button shows/hides the panel using `aria-expanded` and display state.
+2. **Amber disclaimer badge:** Always visible when the panel is expanded, stating "AI draft — review before sending" in the `--amber` color.
+3. **Streaming text div:** The drafted text is rendered in a scrollable section (populated by the `POST /api/draft-decision` SSE response).
+4. **"Use this draft ↑" button:** A ghost-style button copies the draft text into the textarea below, allowing operators to review and edit before sending.
+
+Example interaction:
+1. Operator sees a blocked task with an AI draft available.
+2. Clicks "AI Draft" button → panel expands, disclaimer badge is visible.
+3. Reads the streamed draft suggestion.
+4. Clicks "Use this draft ↑" → text is copied into the textarea.
+5. Operator edits the text if needed and clicks "Send back to agent →".
+
+### Textarea with visible label and ARIA (AC7)
+
+The human decision textarea includes:
+
+- **Visible `<label>` element:** Linked to the textarea via `for` attribute and `id` attribute, always visible (not hidden or placeholder-only). Label text: "Your decision".
+- **`aria-required="true"`:** Signals to assistive technologies that the field is required before submission.
+
+The textarea uses placeholder text for hints but the actual label is a proper semantic `<label>` element.
+
+### Dynamic document title (AC8)
+
+The browser tab title updates dynamically based on queue state:
+
+- **Pending items (N > 0):** `(N) Fleet Console` (e.g., "(2) Fleet Console")
+- **All clear:** `Fleet Console — All clear`
+
+The title updates every time cards are added or removed, giving operators a quick status check from the browser tab without opening the console.
+
+### SSE reconnect banner (AC9)
+
+When the SSE connection drops (e.g., server restart), an amber banner appears at the top:
+
+```
+⚠ Connection lost — reconnecting…
+```
+
+The banner includes a spinner animation. When the SSE connection is re-established, the banner disappears automatically. This prevents operator confusion when the console briefly loses its live push stream.
+
+### Keyboard accessibility (AC10)
+
+All interactive buttons are native `<button>` elements:
+
+```html
+<button class="btn-approve" aria-label="...">Approve →</button>
+```
+
+Native buttons automatically:
+- Respond to Enter key (AC10 requirement)
+- Respond to Space key
+- Are focusable via Tab
+- Announce their purpose to screen readers via `aria-label`
+
+No custom key handlers are needed — the browser's native button behavior is leveraged.
+
+### Implementation details
+
+- **No dependencies:** `console.js` uses vanilla JavaScript with no npm packages (htmx is not required for core functionality).
+- **Event source:** SSE endpoint is `/api/events` (shared with agent log broadcasting).
+- **Event types:** `approval`, `attention`, `resolve` (from the server).
+- **HTML escaping:** All dynamic content is escaped via an `esc()` helper function to prevent XSS.
+- **State sync:** A `syncState()` function centralizes the logic for updating empty states, counts, badges, and the document title after every card operation.
+- **Timer display:** Elapsed time on each card updates every 1 second (minutes:seconds format).
+
+---
+
+## Console test suite (v7.1)
+
+The console includes comprehensive unit and integration tests covering risk classification, approval polling, and endpoint security boundaries. Run all tests with:
+
+```bash
+bun test supervisor/console/
+```
+
+### Bash wrapper tests — `bash-wrapper.test.sh` + `bash-wrapper.test.ts`
+
+**Risk classification (AC1):** The `check_risk` function classifies commands into security tiers:
+
+| Command | Classification | Example |
+|---------|-----------------|---------|
+| Destructive git operations | high | `git push origin main`, `git rebase`, `git reset` |
+| Recursive file operations | high | `rm -rf /home`, `chmod -R`, `chown -R`, `mkfs`, `fdisk` |
+| Pipe-to-shell | high | `curl \| bash`, `wget \| sh` |
+| Safe commands | low | `git clone`, `ls`, `bun test`, `cd` |
+| Chained operations | high | `cd /tmp && git push origin main` (if any segment is high) |
+
+The classification runs inline in the bash wrapper (`supervisor/console/bin/bash`) before attempting execution. Commands classified as high are sent to the console for operator approval; low-risk commands execute immediately.
+
+**Approval polling (AC2):** When a command is blocked, the wrapper polls for a decision file:
+
+- **Approved path:** If `<agent>-<request-id>.decision.json` appears with `{"approved": true}`, the wrapper executes the command and exits 0.
+- **Rejected path:** If the decision file has `{"approved": false}`, the wrapper exits 1 (command blocked).
+- **Timeout path:** If no decision file appears within 60s, the wrapper exits 1 (timeout protection prevents indefinite hangs).
+
+All three paths are covered by the test suite.
+
+### Server endpoint tests — `server.test.ts` + `server-utils.ts`
+
+**Task ID validation (AC3):** The `POST /api/unblock/<taskId>` endpoint rejects invalid task IDs:
+
+- Invalid: lowercase IDs (`cons-003`), missing digits (`CONS`), trailing slashes with extra segments
+- Valid: uppercase + dash + digits only (regex: `/^[A-Z]+-[0-9]+$/`)
+- Response: HTTP 400 if invalid, 200 if valid
+
+**Agent name validation (AC4):** The `POST /api/mailbox/<agentName>` endpoint rejects unknown agents:
+
+- Valid agents are loaded from `fleet.conf` at startup into a `Set`
+- Unknown or empty agent names return HTTP 400
+- Valid agents return HTTP 200
+
+**Needs-human endpoint (AC5):** The `GET /api/attention` endpoint returns all tasks with `status: needs_human`:
+
+```bash
+curl http://127.0.0.1:7842/api/attention
+```
+
+Response:
+```json
+{
+  "tasks": [
+    {
+      "id": "CONS-003",
+      "status": "needs_human",
+      "domain": "be",
+      "description": "..."
+    }
+  ]
+}
+```
+
+**Ledger parsing edge cases (AC6):** The `parseTaskLedger()` utility handles empty or missing ledger directories without crashing — returns an empty array.
+
+**Mailbox parsing edge cases (AC7):** The `parseMailboxNotes()` utility handles mailbox files containing only the `<!-- cleared by ... -->` marker without crashing — returns an empty array.
+
+### Test results
+
+All 15 tests pass (5 bash-wrapper + 10 server tests). Run the full suite with:
+
+```bash
+bun test supervisor/console/     # runs all tests, exit 0 on pass
+bun test --timeout 10000 supervisor/console/  # increase timeout if needed
+```
 
 ---
 
