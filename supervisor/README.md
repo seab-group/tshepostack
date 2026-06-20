@@ -464,6 +464,97 @@ When an agent writes an approval request or task log line, the console receives 
 
 ---
 
+## Tab navigation and panel switching (v7.1)
+
+The console UI organizes control surfaces into three tabs: **Fleet**, **Queue**, and **Cost**. Each tab is a distinct panel; clicking a tab switches which panel is visible while keeping others hidden.
+
+### Tabs and panels
+
+- **Fleet tab** — Shows agent fleet status (agent names, states, current task, elapsed time, recent tool use)
+- **Queue tab** — Shows pending tasks awaiting approval (the approval section from earlier sections)
+- **Cost tab** — Placeholder for operational cost tracking (not yet implemented; currently shows static text)
+
+### Implementation
+
+The console UI (`console.js`) renders a `<nav role="tablist">` element with three `<button role="tab">` elements (one per tab). When a tab is clicked:
+
+1. The `onclick` handler finds the corresponding panel element (e.g., `<section id="section-fleet">`)
+2. Sets `hidden` attribute on the previously active panel
+3. Removes `hidden` attribute from the new panel
+4. Updates the active button's `aria-selected` state and styling
+
+Each panel (`section-fleet`, `section-queue`, `section-cost`) is a sibling `<section>` in the DOM. CSS media queries and design tokens ensure tab buttons are styled consistently with the rest of the console.
+
+---
+
+## Fleet status table (v7.1)
+
+The **Fleet tab** displays a real-time table of all agents in the fleet. Each row represents one agent and shows: agent name, current state (badge), current task ID (or "no tasks"), session start time, elapsed time, last tool used, and last summary.
+
+### Table columns
+
+| Column | Content | Source | Updates |
+|--------|---------|--------|---------|
+| Agent | Agent name (e.g., "agent-be", "agent-qa") | `fleet.conf` / API response | Static per session |
+| State | Badge: **WORKING** (green) or **IDLE** (amber) | `presence/<agent>.json` | On state change; <1s via SSE |
+| Task | Task ID (e.g., "CONS-015") or "—" if no tasks | `live.json` task field | On task change; <1s via SSE |
+| Started | ISO timestamp when agent session started | `live.json` sessionStart | On session change; <1s via SSE |
+| Elapsed | Human-readable duration (e.g., "2m 15s") | Calculated: now - sessionStart | Every 5s (client-side timer) |
+| Last tool | Tool name (e.g., "Read", "Edit", "Bash") | `live.json` lastTool | On tool change; <1s via SSE |
+| Summary | One-line task description | `live.json` lastSummary | On summary change; <1s via SSE |
+
+### State badges
+
+The **State** column uses color-coded badges:
+
+- **WORKING** — Green badge (CSS token `--green`). Shown when agent state in `presence/<agent>.json` is "working".
+- **IDLE** — Amber badge (CSS token `--amber`). Shown when agent state is "idle" or not yet reported.
+
+Badges are implemented as `.state-working` and `.state-idle` CSS classes, allowing easy customization of colors via design tokens in `styles.css`.
+
+### Rendering logic
+
+When the console loads or receives a `fleet-update` SSE event, it calls `renderFleet()` which:
+
+1. Fetches `GET /api/fleet` (async JSON response)
+2. For each agent in the response, renders a table row with formatted columns:
+   - Elapsed time is recalculated as `Date.now() - new Date(sessionStart).getTime()`
+   - State badge CSS class is determined by the `state` field
+   - Task ID defaults to "—" if missing
+3. Replaces the old table with the new one (preserving scroll position when possible)
+4. The elapsed-time columns continue to update every 5 seconds via client-side `setInterval` timer (independent of SSE updates)
+
+---
+
+## Real-time fleet updates via SSE (v7.1)
+
+The console uses **Server-Sent Events (SSE)** to push fleet status updates to the browser in real-time. When an agent's state or task changes on the server, the browser's fleet table updates within ~1 second without polling.
+
+### Update trigger
+
+1. **On server.** When any agent's `presence/<agent>.json` or `live.json` is written, the server's `fs.watch` callbacks detect the change and broadcast a `fleet-update` SSE event to all connected consoles.
+
+2. **On browser.** The console receives the SSE event and calls `renderFleet()` to re-fetch `/api/fleet` and re-render the table. The browser does not parse the SSE event payload — it only uses the event type as a trigger to refresh.
+
+### Staleness detection and fallback polling
+
+The console includes a **30-second polling fallback** to handle SSE connection loss or server-side watch failures:
+
+1. When `renderFleet()` completes, it resets a staleness timer (`startFleetStalenessTimer()`)
+2. If no new fleet-update SSE event arrives within 30 seconds, the timer fires and triggers another fetch of `/api/fleet`
+3. This re-polling continues every 30 seconds until an SSE event is received, which resets the timer
+
+This dual mechanism ensures the fleet table stays fresh even if the SSE connection is temporarily lost or if fs.watch misses a file change.
+
+### Implementation
+
+- **SSE event type:** `fleet-update` (sent by server, received by browser)
+- **Event payload:** Empty; browser reacts to the event type, not the body
+- **Fallback timer:** `setInterval` every 30 seconds (`FLEET_STALE_MS = 30000`)
+- **Timer reset:** Triggered by SSE event AND by successful fetch completion in `renderFleet()`
+
+---
+
 ## Fleet status endpoint — real-time agent fleet state (v7.1)
 
 The console lets operators query the current state of all agents in the fleet, showing which agents are working, idle, or have never run. The `GET /api/fleet` endpoint returns a structured snapshot of agent status from `live.json` and `presence.json` files, and complementary `fleet-update` SSE events notify browsers when the fleet state changes.

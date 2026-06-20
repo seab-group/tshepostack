@@ -16,6 +16,23 @@ QA agents can now verify the console UI is rendering correctly using a lightweig
 - `roles/QA_ROLE.md` now requires all console UI tasks to run the smoke script before marking tests complete — assertions and screenshots replace curl-only JSON verification
 - QA workflow now includes browser-level verification as a mandatory gate for tasks with `human-verify` ACs targeting web endpoints
 
+### Fleet tab — Console UI with agent fleet status (v7.1)
+
+The console now includes a **Fleet tab** showing the real-time status of all agents in the fleet. Operators can see which agents are working or idle, what task each is executing, how long it's been running, and what tool was last used — all updating live as agent states change via Server-Sent Events.
+
+#### Added
+- Three-tab navigation bar in console UI: **Fleet**, **Queue**, and **Cost** tabs for organizing operator controls
+- **Fleet status table** with columns: Agent name, State (badge), Task ID, Session start time, Elapsed time, Last tool, Last summary
+- State badges: green **WORKING** badge when agent is executing a task, amber **IDLE** badge when agent is idle
+- Real-time table updates via `fleet-update` SSE events: table re-renders within 1 second when any agent state changes
+- 30-second polling fallback: if no SSE event arrives for 30s, the console automatically re-fetches `/api/fleet` to ensure table freshness
+- Elapsed time display: session duration updated every 5 seconds on the client side (independent of SSE updates)
+- Tab switching: clicking Fleet/Queue/Cost tabs shows/hides corresponding panels via HTML `hidden` attribute and JavaScript toggle
+
+#### Changed
+- Console HTML structure expanded from one queue panel to three panels (fleet, queue, cost) with tabbed navigation
+- Console UI now requires `/api/fleet` endpoint (CONS-012) to populate agent status; startup fetch occurs when Fleet tab is first clicked or console loads
+
 ### Static file serving — console UI served from filesystem (v7.1)
 
 The console server now serves static HTML, CSS, and JavaScript files from the `supervisor/console/` directory without requiring a separate web server or build step. Operators access the console at `http://127.0.0.1:7842/`, with automatic path-traversal protection and MIME-type detection.
