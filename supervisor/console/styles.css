@@ -146,6 +146,11 @@ body::after {
   box-shadow: 0 0 4px var(--color-red);
   animation: none;
 }
+.sse-dot.connecting {
+  background: var(--amber);
+  box-shadow: 0 0 4px var(--amber);
+  animation: pulse 2s ease-in-out infinite;
+}
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
@@ -430,7 +435,7 @@ body::after {
   letter-spacing: 0.05em;
 }
 .risk-high { background: rgba(239, 68, 68, 0.1); color: var(--red); border: 1px solid rgba(239, 68, 68, 0.2); }
-.risk-medium { background: rgba(245, 158, 11, 0.08); color: var(--color-amber); border: 1px solid rgba(245, 158, 11, 0.2); }
+.risk-medium { background: rgba(245, 158, 11, 0.1); color: var(--amber); border: 1px solid rgba(245, 158, 11, 0.2); }
 
 .approval-command {
   font-family: var(--mono);
@@ -443,8 +448,8 @@ body::after {
   margin: var(--space-3) 0;
   word-break: break-all;
   display: -webkit-box;
-  -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
   overflow: hidden;
 }
 .approval-description {
@@ -553,29 +558,20 @@ body::after {
 .btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-unblock {
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-btn);
-  background: none;
-  color: var(--text-dim);
+  padding: 8px 18px;
+  border: none;
+  border-radius: 8px;
+  background: var(--amber);
+  color: #0C0C0C;
   font-family: var(--sans);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
-  transition: border-color var(--dur-micro), color var(--dur-micro);
+  transition: background var(--dur-micro), opacity var(--dur-micro);
 }
-.btn-unblock:hover { border-color: var(--amber); color: var(--amber); }
-.btn-unblock:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.card-initial-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: var(--space-3);
-}
-.card-unblock-section {
-  margin-top: var(--space-3);
-}
+.btn-unblock:hover { background: var(--amber-dim); }
+.btn-unblock:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── Success flash ── */
 .success-flash {
@@ -740,6 +736,25 @@ body::after {
 .fleet-agent {
   color: var(--text);
   font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fleet-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.fleet-avatar-fallback {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  display: inline-block;
 }
 .fleet-agent-cell {
   display: flex;
@@ -845,10 +860,54 @@ body::after {
 }
 .card-exit {
   animation: fadeOut 300ms var(--ease-exit) forwards;
+  pointer-events: none;
 }
 @keyframes fadeOut {
-  from { opacity: 1; transform: scaleY(1); max-height: 500px; }
-  to { opacity: 0; transform: scaleY(0.95); max-height: 0; padding: 0; margin: 0; overflow: hidden; }
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* ── Responsive — fleet table → card layout below 640px; no h-scroll at 375px ── */
+@media (max-width: 640px) {
+  .fleet-table { border-collapse: separate; border-spacing: 0; }
+  .fleet-table thead { display: none; }
+  .fleet-table tr {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    background: var(--surface);
+  }
+  .fleet-table td {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .fleet-table td:last-child { border-bottom: none; }
+  .fleet-table td::before {
+    content: attr(data-label);
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-micro);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    min-width: 72px;
+    flex-shrink: 0;
+  }
+  .fleet-table tr:hover td { background: inherit; }
+  .fleet-avatar { display: none; }
+  .fleet-avatar-fallback { display: none; }
+  .fleet-summary { max-width: none; white-space: normal; }
+  .page-body { padding: 16px 12px 48px; }
+}
+
+@media (max-width: 375px) {
+  .page-body { padding: 12px 8px 48px; }
+  .page-header { padding: 10px 12px 0; gap: 6px; }
+  .approval-command { font-size: 11px; }
+  .card-actions { flex-wrap: wrap; }
 }
 
 /* ── Responsive: fleet table → card layout below 640px (AC8) ── */

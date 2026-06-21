@@ -19,6 +19,7 @@ const sseLabel = $('sse-label');
 const attentionBadge = $('attention-badge');
 const approvalBadge = $('approval-badge');
 
+let es = null;
 let sseConnected = false;
 let currentEs = null;
 let attentionCount = 0;
@@ -88,16 +89,16 @@ function switchTab(name) {
 
 /* ── Fleet data ── */
 
-async function fetchFleet() {
+async function fetchFleet(baseTs) {
   try {
     const res = await fetch(FLEET_URL);
     if (!res.ok) return;
     const agents = await res.json();
-    renderFleet(agents);
+    renderFleet(agents, baseTs);
   } catch (_) {}
 }
 
-function renderFleet(agents) {
+function renderFleet(agents, baseTs) {
   const loading = $('fleet-loading');
   const table = $('fleet-table');
   const empty = $('fleet-empty');
@@ -120,6 +121,7 @@ function renderFleet(agents) {
   tbody.innerHTML = '';
   for (const a of agents) {
     const tr = document.createElement('tr');
+    const avatarUrl = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(a.name)}&size=32`;
     const taskCell = a.task
       ? `<span class="fleet-task-id">${esc(a.task)}</span>`
       : `<span class="fleet-no-task">no tasks</span>`;
@@ -130,27 +132,35 @@ function renderFleet(agents) {
 
     tr.innerHTML = `
       <td class="fleet-agent" data-label="Agent">
-        <div class="fleet-agent-cell">
-          <div class="fleet-avatar">
-            <img src="${avatarSrc}" width="32" height="32" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
-            <div class="fleet-avatar-fallback" aria-hidden="true"></div>
-          </div>
-          <span>${esc(a.name)}</span>
-        </div>
+        <img class="fleet-avatar" src="${avatarUrl}" width="32" height="32" alt="" loading="lazy">
+        <div class="fleet-avatar-fallback" hidden aria-hidden="true"></div>
+        ${esc(a.name)}
       </td>
       <td data-label="State">${stateToHtml(a.state)}</td>
       <td data-label="Task">${taskCell}</td>
       <td class="fleet-elapsed" data-label="Elapsed">—</td>
-      <td class="fleet-tool" data-label="Tool">${toolCell}</td>
+      <td class="fleet-tool" data-label="Last tool">${toolCell}</td>
       <td class="fleet-summary" data-label="Activity">${summaryCell}</td>
     `;
 
     tbody.appendChild(tr);
 
+    /* AC1: fallback to grey circle if Dicebear fails to load */
+    const avatarImg = tr.querySelector('.fleet-avatar');
+    if (avatarImg) {
+      avatarImg.onerror = function() {
+        this.style.display = 'none';
+        const fallback = this.nextElementSibling;
+        if (fallback) fallback.removeAttribute('hidden');
+      };
+    }
+
     if (!a.ended && a.sessionStart) {
+      /* AC2: base timestamp from fleet-update ev.ts; update every 10 s */
+      const base = baseTs != null ? baseTs : Date.parse(a.sessionStart);
       const elapsedEl = tr.querySelector('.fleet-elapsed');
-      updateElapsed(elapsedEl, a.sessionStart);
-      const timer = setInterval(() => updateElapsed(elapsedEl, a.sessionStart), 10000);
+      updateElapsed(elapsedEl, base);
+      const timer = setInterval(() => updateElapsed(elapsedEl, base), 10000);
       fleetElapsedTimers.set(a.name, timer);
     }
   }
@@ -274,24 +284,6 @@ function exitCard(card, onRemove) {
   }, 300);
 }
 
-/* ── SSE dot: green/amber/red checked every 2s (AC3) ── */
-
-function updateSseDot() {
-  const rs = currentEs ? currentEs.readyState : 2;
-  if (rs === 1) {
-    sseDot.classList.remove('disconnected', 'connecting');
-    sseLabel.textContent = 'live';
-  } else if (rs === 0) {
-    sseDot.classList.remove('disconnected');
-    sseDot.classList.add('connecting');
-    sseLabel.textContent = 'connecting';
-  } else {
-    sseDot.classList.remove('connecting');
-    sseDot.classList.add('disconnected');
-    sseLabel.textContent = 'offline';
-  }
-}
-
 /* ── Approval card ── */
 
 function buildApprovalCard(ev) {
@@ -386,11 +378,6 @@ function buildAttentionCard(ev) {
     `<div class="card-ac-row"><span class="ac-id">${esc(ac.id)}</span><span>${esc(ac.text)}</span></div>`
   ).join('');
 
-  /* Cap agent note at 160 chars (AC5) */
-  const noteRaw = ev.agent_note || '';
-  const noteText = noteRaw.length > 160 ? noteRaw.slice(0, 160) + '…' : noteRaw;
-
-  /* AI draft panel (collapsed by default, inside the unblock section) */
   const draftText = ev.ai_draft || '';
   const draftPanelHtml = draftText ? `
     <div class="ai-draft-panel" id="${draftPanelId}" aria-label="AI draft decision" style="display:none">
@@ -403,12 +390,17 @@ function buildAttentionCard(ev) {
     </div>
   ` : '';
 
+  /* AI draft toggle hidden initially — revealed after Unblock is clicked */
   const draftToggleHtml = draftText ? `
-    <button class="ai-draft-toggle" aria-expanded="false" aria-controls="${draftPanelId}">
+    <button class="ai-draft-toggle" hidden aria-expanded="false" aria-controls="${draftPanelId}">
       AI Draft
       <span class="ai-draft-label">AI</span>
     </button>
   ` : '';
+
+  /* AC5: cap mailbox note at 160 chars */
+  const rawNote = ev.agent_note || '';
+  const noteText = rawNote.length > 160 ? rawNote.slice(0, 160) + '…' : rawNote;
 
   article.innerHTML = `
     <div class="card-meta">
@@ -422,28 +414,23 @@ function buildAttentionCard(ev) {
     <div class="card-task-title">${esc(ev.title || ev.task_id)}</div>
     ${noteText ? `<div class="card-agent-note" role="note">${esc(noteText)}</div>` : ''}
     ${acsHtml ? `<div class="card-acs"><div class="card-acs-label">Acceptance criteria context</div>${acsHtml}</div>` : ''}
-    <div class="card-unblock-section" id="${unblockSectionId}" style="display:none">
-      ${draftPanelHtml}
-      <div class="card-textarea-wrapper">
-        <label class="card-textarea-label" for="${textareaId}">Your decision</label>
-        <textarea
-          class="card-textarea"
-          id="${textareaId}"
-          placeholder="Type your decision for the agent..."
-          aria-required="true"
-        ></textarea>
-      </div>
-      <div class="card-actions">
-        ${draftToggleHtml}
-        <button class="btn-send" aria-label="Send decision back to ${esc(ev.agent)} for task ${esc(ev.task_id)}">Send reply</button>
-      </div>
+    ${draftPanelHtml}
+    <div class="card-textarea-wrapper" id="textarea-wrapper-${ev.id}" hidden>
+      <label class="card-textarea-label" for="${textareaId}">Your decision</label>
+      <textarea
+        class="card-textarea"
+        id="${textareaId}"
+        placeholder="Type your decision for the agent..."
+        aria-required="true"
+      ></textarea>
     </div>
-    <div class="card-initial-actions">
-      <button class="btn-unblock" aria-controls="${unblockSectionId}" aria-label="Unblock task ${esc(ev.task_id)} for ${esc(ev.agent)}">Unblock</button>
+    <div class="card-actions">
+      <button class="btn-unblock" aria-label="Unblock task ${esc(ev.task_id)} for agent ${esc(ev.agent)}">Unblock</button>
+      ${draftToggleHtml}
+      <button class="btn-send" hidden aria-label="Send decision back to ${esc(ev.agent)} for task ${esc(ev.task_id)}">Send reply</button>
     </div>
   `;
 
-  /* AI draft toggle */
   if (draftText) {
     const toggle = article.querySelector('.ai-draft-toggle');
     const panel = article.querySelector(`#${draftPanelId}`);
@@ -452,7 +439,6 @@ function buildAttentionCard(ev) {
       toggle.setAttribute('aria-expanded', String(!expanded));
       panel.style.display = expanded ? 'none' : '';
     });
-
     article.querySelector('.ai-draft-use-btn').addEventListener('click', () => {
       const textarea = article.querySelector(`#${textareaId}`);
       textarea.value = draftText;
@@ -460,18 +446,20 @@ function buildAttentionCard(ev) {
     });
   }
 
-  /* Unblock button: reveal textarea section (AC5) */
   const unblockBtn = article.querySelector('.btn-unblock');
-  const unblockSection = article.querySelector(`#${unblockSectionId}`);
-  const initialActions = article.querySelector('.card-initial-actions');
+  const sendBtn = article.querySelector('.btn-send');
+  const textareaWrapper = article.querySelector(`#textarea-wrapper-${ev.id}`);
+
+  /* AC5: Unblock click reveals textarea + Send reply */
   unblockBtn.addEventListener('click', () => {
-    unblockSection.style.display = '';
-    initialActions.style.display = 'none';
+    unblockBtn.setAttribute('hidden', '');
+    textareaWrapper.removeAttribute('hidden');
+    sendBtn.removeAttribute('hidden');
+    if (draftText) article.querySelector('.ai-draft-toggle').removeAttribute('hidden');
     article.querySelector(`#${textareaId}`).focus();
   });
 
-  /* Send reply: POST { action, text, agentName, taskId } (AC6) */
-  const sendBtn = article.querySelector('.btn-send');
+  /* AC6: Send reply — POST with agentName + taskId; shows Sending… while in-flight */
   sendBtn.addEventListener('click', () => {
     const textarea = article.querySelector(`#${textareaId}`);
     const text = textarea.value.trim();
@@ -523,7 +511,7 @@ function sendDecision(id, action, text) {
 /* ── SSE ── */
 
 function connect() {
-  currentEs = new EventSource(SSE_URL);
+  es = new EventSource(SSE_URL);
 
   currentEs.addEventListener('open', () => {
     sseConnected = true;
@@ -564,7 +552,7 @@ function connect() {
     const ev = JSON.parse(e.data);
     if (ev.type === 'fleet-update') {
       fleetLastEventTs = Date.now();
-      if (currentTab === 'fleet') fetchFleet();
+      if (currentTab === 'fleet') fetchFleet(ev.ts);
     }
   });
 
@@ -594,4 +582,29 @@ for (const [name, btn] of Object.entries(tabBtns)) {
 
 switchTab('fleet');
 connect();
-setInterval(updateSseDot, 2000);
+
+/* AC3: poll SSE readyState every 2 s to cycle dot green/amber/red */
+setInterval(() => {
+  if (!es) return;
+  if (es.readyState === EventSource.OPEN) {
+    sseDot.classList.remove('disconnected', 'connecting');
+  } else if (es.readyState === EventSource.CONNECTING) {
+    sseDot.classList.add('connecting');
+    sseDot.classList.remove('disconnected');
+  } else {
+    sseDot.classList.add('disconnected');
+    sseDot.classList.remove('connecting');
+  }
+}, 2000);
+
+/* Test injection helpers — used by qa-smoke.sh via browse js */
+window.__injectApproval = function(ev) {
+  approvalCards.prepend(buildApprovalCard(ev));
+  approvalCount++;
+  syncState();
+};
+window.__injectAttention = function(ev) {
+  attentionCards.prepend(buildAttentionCard(ev));
+  attentionCount++;
+  syncState();
+};
