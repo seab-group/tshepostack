@@ -22,6 +22,7 @@ import {
   serveStatic,
   readFleetStatus,
   makeWatchHandler,
+  gitCommitAndPush,
 } from "./server-utils.ts";
 
 const PORT = 7842;
@@ -78,35 +79,6 @@ function resolveControlDir(agents: string[]): string {
   return clonePath;
 }
 
-// Run a git subcommand in repoPath, return exit code.
-function runGit(args: string[], repoPath: string): number {
-  const result = spawnSync("git", args, { cwd: repoPath, stdio: "inherit" });
-  return result.status ?? 1;
-}
-
-// Commit `file` (absolute path inside `repoPath`) then push.
-// If push is rejected (exit 1 or 128): pull --rebase once, then retry push.
-// Maximum one rebase attempt — does not loop.
-function gitCommitAndPush(repoPath: string, file: string, message: string): void {
-  runGit(["add", file], repoPath);
-  runGit(["commit", "-m", message], repoPath);
-
-  console.log(`[gitCommitAndPush] pushing`);
-  const pushExit = runGit(["push"], repoPath);
-  if (pushExit === 0) return; // AC4: no rebase on success
-
-  // Only rebase on push-rejection exit codes (AC4 constraint).
-  if (pushExit === 1 || pushExit === 128) {
-    console.log(`[gitCommitAndPush] push rejected (exit ${pushExit}), retrying with pull --rebase`);
-    const pullExit = runGit(["pull", "--rebase"], repoPath);
-    if (pullExit !== 0) throw new Error("push failed after retry"); // AC3
-
-    const retryExit = runGit(["push"], repoPath);
-    if (retryExit === 0) return; // AC2: success after rebase
-  }
-
-  throw new Error("push failed after retry"); // AC3
-}
 
 async function handleMailbox(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
   const chunks: Buffer[] = [];
@@ -117,10 +89,10 @@ async function handleMailbox(req: IncomingMessage, res: ServerResponse, agentNam
   await appendFile(mailboxFile, body ? `\n${body}\n` : "\n");
 
   try {
-    gitCommitAndPush(controlDir, mailboxFile, `mailbox(${agentName}): console message`);
+    await gitCommitAndPush(controlDir, `mailbox(${agentName}): console message`);
     sendJson(res, { ok: true });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "push failed after retry";
+    const msg = err instanceof Error ? err.message : "git push failed after 3 retries";
     sendJson(res, { error: msg }, 500);
   }
 }

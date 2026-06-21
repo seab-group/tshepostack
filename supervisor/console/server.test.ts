@@ -16,7 +16,9 @@ import {
   serveStatic,
   readFleetStatus,
   makeWatchHandler,
+  gitCommitAndPush,
   type AgentStatus,
+  type GitSpawner,
 } from "./server-utils.ts";
 
 const TEST_PORT = 7843;
@@ -394,5 +396,91 @@ describe("parseMailboxNotes", () => {
     expect(notes).toHaveLength(1);
     expect(notes[0].from).toBe("agent-qa");
     expect(notes[0].taskId).toBe("CONS-003");
+  });
+});
+
+// --- T7: gitCommitAndPush ---
+
+function makeSpawner(responses: Record<string, { code: number; out?: string; err?: string }[]>): {
+  spawner: GitSpawner;
+  calls: string[][];
+} {
+  const calls: string[][] = [];
+  const counters: Record<string, number> = {};
+  const spawner: GitSpawner = async (args) => {
+    calls.push([...args]);
+    const key = args[0];
+    counters[key] = (counters[key] ?? 0) + 1;
+    const queue = responses[key] ?? [];
+    const response = queue[counters[key] - 1] ?? queue[queue.length - 1] ?? { code: 0 };
+    return { code: response.code, out: response.out ?? "", err: response.err ?? "" };
+  };
+  return { spawner, calls };
+}
+
+describe("gitCommitAndPush", () => {
+  test("uses git add -A, commit -m, and push origin HEAD in order (AC1)", async () => {
+    const { spawner, calls } = makeSpawner({
+      "rev-parse": [{ code: 0, out: "main" }],
+    });
+    await gitCommitAndPush("/fake/repo", "test: hello", spawner);
+    expect(calls[0]).toEqual(["rev-parse", "--abbrev-ref", "HEAD"]);
+    expect(calls[1]).toEqual(["add", "-A"]);
+    expect(calls[2]).toEqual(["commit", "-m", "test: hello"]);
+    expect(calls[3]).toEqual(["push", "origin", "HEAD"]);
+  });
+
+  test("resolves void on success without retry (AC4)", async () => {
+    const { spawner } = makeSpawner({ "rev-parse": [{ code: 0, out: "main" }] });
+    await expect(gitCommitAndPush("/fake/repo", "msg", spawner)).resolves.toBeUndefined();
+  });
+
+  test("resolves void without push when commit exits non-zero (AC5)", async () => {
+    const { spawner, calls } = makeSpawner({
+      "rev-parse": [{ code: 0, out: "main" }],
+      commit: [{ code: 1, err: "nothing to commit" }],
+    });
+    await expect(gitCommitAndPush("/fake/repo", "msg", spawner)).resolves.toBeUndefined();
+    expect(calls.some((a) => a[0] === "push")).toBe(false);
+  });
+
+  test("retries with fetch+reset+re-stage+re-commit after first push failure (AC2)", async () => {
+    let pushCount = 0;
+    const { spawner, calls } = makeSpawner({
+      "rev-parse": [{ code: 0, out: "main" }],
+      push: [{ code: 128, err: "rejected" }, { code: 0 }],
+    });
+    // Override push counter tracking via custom spawner that delegates
+    const wrappedSpawner: GitSpawner = async (args) => {
+      if (args[0] === "push") pushCount++;
+      return spawner(args);
+    };
+    await expect(gitCommitAndPush("/fake/repo", "msg", wrappedSpawner)).resolves.toBeUndefined();
+    const fetchIdx = calls.findIndex((a) => a[0] === "fetch");
+    const resetIdx = calls.findIndex((a) => a[0] === "reset");
+    expect(fetchIdx).toBeGreaterThan(-1);
+    expect(resetIdx).toBeGreaterThan(fetchIdx);
+    expect(calls[resetIdx]).toEqual(["reset", "--hard", "origin/main"]);
+    expect(pushCount).toBe(2);
+  });
+
+  test("throws Error after 3 failed push attempts (AC3)", async () => {
+    const { spawner } = makeSpawner({
+      "rev-parse": [{ code: 0, out: "main" }],
+      push: [{ code: 1 }],
+    });
+    await expect(gitCommitAndPush("/fake/repo", "msg", spawner)).rejects.toThrow(
+      "git push failed after 3 retries",
+    );
+  });
+
+  test("uses origin/<branch> from rev-parse in reset command (AC2 branch name)", async () => {
+    const { spawner, calls } = makeSpawner({
+      "rev-parse": [{ code: 0, out: "feat/my-branch\n" }],
+      push: [{ code: 1, err: "rejected" }, { code: 0 }],
+    });
+    await gitCommitAndPush("/fake/repo", "msg", spawner);
+    const resetCall = calls.find((a) => a[0] === "reset");
+    expect(resetCall).toEqual(["reset", "--hard", "origin/feat/my-branch"]);
   });
 });
