@@ -387,37 +387,54 @@ This replaces the old `Console server listening on http://127.0.0.1:7842` messag
 
 ---
 
-## Mailbox push resilience — rebase-on-retry (v7.1)
+## Mailbox push resilience — fetch-reset-retry (T7)
 
-When multiple agents write to the control repository simultaneously, a push can be rejected if another agent's commit arrives first. To handle this gracefully, the `POST /api/mailbox` endpoint automatically retries failed pushes.
+When multiple agents write to the control repository simultaneously, a push can be rejected if another agent's commit arrives first. To handle this gracefully, `gitCommitAndPush` in `server-utils.ts` automatically retries failed pushes up to three times using a hard-reset sync strategy.
 
 ### Retry logic
 
-When the console publishes an agent's message to the mailbox:
+`gitCommitAndPush(controlDir, commitMessage)` runs the following sequence:
 
-1. **First push attempt.** The console commits the message to the control repo and pushes:
-   ```bash
-   git add mailboxes/<agent-name>.md
-   git commit -m "mailbox(<agent-name>): console message"
-   git push
-   ```
+1. **Stage all changes.** `git add -A` — stages every modified and untracked file in the working tree.
 
-2. **Rejection detected.** If the push fails (exit code 1 or 128), the console does NOT retry immediately. Instead:
-   - Log: `[gitCommitAndPush] push rejected (exit <code>), retrying with pull --rebase`
-   - Rebase locally against the remote branch: `git pull --rebase`
-   - Attempt push once more: `git push`
+2. **Commit.** `git commit -m <commitMessage>`. If the exit code is non-zero (e.g., "nothing to commit"), the function returns void without attempting a push.
 
-3. **Maximum one retry.** The retry count is hard-capped at 1. If rebase or the second push fails, the endpoint returns HTTP 500 with `{"error":"push failed after retry"}` and does NOT attempt further retries.
+3. **Push with up to 3 attempts.** For each attempt:
+   - `git push origin HEAD`
+   - If exit code 0 — success, return void immediately.
+   - If non-zero and more attempts remain:
+     ```bash
+     git fetch origin
+     git reset --hard origin/<branch>   # <branch> resolved at call start via git rev-parse
+     git add -A
+     git commit -m <commitMessage>
+     ```
+   - Then retry the push.
 
-4. **Success case — no rebase.** If the first push succeeds, the endpoint returns HTTP 200 immediately; no rebase is attempted (AC4 constraint — avoid unnecessary rebases when they're not needed).
+4. **After 3 failed push attempts**, throws `Error('git push failed after 3 retries')`.
 
-### Conflict handling
+### Subprocess timeout
 
-If the rebase encounters an irresolvable conflict (e.g., two agents edited the same mailbox file), `git pull --rebase` returns non-zero. The console catches this and returns HTTP 500 with the error message, leaving the working tree in a consistent state for recovery or manual inspection.
+Every git subprocess runs with a 30-second kill timeout. A subprocess that hangs is killed and its result is counted as a failure (exit code 1). This prevents a stalled network operation from blocking the event loop indefinitely.
+
+### Why fetch + reset --hard instead of pull --rebase
+
+`git pull --rebase` can leave the working tree in a detached-HEAD state when run non-interactively in CI and automated agent environments. The `fetch + reset --hard` pattern is deterministic: it discards any local-only divergence and aligns the branch exactly with the remote before re-committing. The console's use case (writing a single file and committing it) has no meaningful local-only state to preserve between retries.
 
 ### Operator impact
 
-Operators publishing messages via the console UI experience failures only when conflicts are genuinely unresolvable, not when they occur during brief windows of concurrent pushes. Temporary push rejections due to timing are handled transparently.
+Operators publishing messages via the console UI experience failures only after three genuine concurrent conflicts — rare under normal fleet operation. Temporary push rejections due to brief timing windows are handled transparently.
+
+### Test coverage
+
+| AC | Test | Location |
+|---|---|---|
+| AC1 | `gitCommitAndPush stages with git add -A and commits` | `server.test.ts` — `describe("gitCommitAndPush")` |
+| AC2 | `gitCommitAndPush retries with fetch+reset on push failure` | `server.test.ts` — first push fails; asserts fetch+reset+re-commit+push sequence |
+| AC3 | `gitCommitAndPush throws after 3 failed pushes` | `server.test.ts` — all 3 pushes fail; asserts Error thrown |
+| AC4 | `gitCommitAndPush resolves void on success` | `server.test.ts` — happy path |
+| AC5 | `gitCommitAndPush resolves void when nothing to commit` | `server.test.ts` — commit exits 1; asserts no push attempted |
+| AC6 | 30s kill timeout on each Bun.spawn call | PR review (human-verify) |
 
 ---
 
@@ -797,6 +814,8 @@ All fonts use `display=swap` to prevent invisible text during font load.
 ### Design tokens
 Sourced from `docs/DESIGN.md` and defined in `:root` of `styles.css`:
 
+**Palette tokens:**
+
 | Token | Value | Purpose |
 |-------|-------|---------|
 | `--base` | `#0C0C0C` | Page background |
@@ -810,6 +829,45 @@ Sourced from `docs/DESIGN.md` and defined in `:root` of `styles.css`:
 | `--green` | `#22C55E` | Success state |
 | `--red` | `#EF4444` | Error state |
 | `--blue` | `#3B82F6` | Info state |
+
+**Typography tokens (T10):**
+
+| Token | Value | Purpose |
+|-------|-------|---------|
+| `--font-body` | `'Satoshi', 'DM Sans', system-ui, sans-serif` | Body font stack — applied to `body { font-family }` |
+| `--font-mono` | `'JetBrains Mono', ui-monospace, monospace` | Monospace font stack — applied to `code` and `.cmd` elements |
+
+**Spacing scale tokens (T10):**
+
+| Token | Value |
+|-------|-------|
+| `--space-1` | `4px` |
+| `--space-2` | `8px` |
+| `--space-3` | `12px` |
+| `--space-4` | `16px` |
+| `--space-6` | `24px` |
+| `--space-8` | `32px` |
+
+All `margin`, `padding`, and `gap` values in component rules use these tokens. No raw `px` values remain in component rules.
+
+**Border-radius tokens (T10):**
+
+| Token | Value | Applied to |
+|-------|-------|------------|
+| `--radius-card` | `6px` | `.card`, `.attention-card`, `.card-textarea`, fleet table rows (responsive) |
+| `--radius-badge` | `4px` | `.section-badge`, `.failure-badge`, `.ai-draft-toggle`, `.card-agent-note` corners |
+| `--radius-btn` | `6px` | Action buttons |
+
+**Status dot color tokens (T10):**
+
+These are separate from the palette `--green`/`--amber`/`--red` tokens and are used exclusively for the SSE connection status dot and state indicators:
+
+| Token | Value | Purpose |
+|-------|-------|---------|
+| `--color-green` | `#16a34a` | Connected dot / working state |
+| `--color-amber` | `#d97706` | Reconnecting dot |
+| `--color-red` | `#dc2626` | Disconnected dot / error state |
+| `--color-grey` | `#9ca3af` | Inactive / stopped state |
 
 ### Motion variables
 Used for consistent timing across transitions and animations:
@@ -825,9 +883,12 @@ Used for consistent timing across transitions and animations:
 ### Visual effects
 - **Grain texture:** `body::after` pseudo-element with SVG `feTurbulence` at 0.03 opacity (fixed position, z-index 9999, non-interactive). Adds subtle surface texture without impacting readability.
 
-### Font sizing
-- Body text: 16px (see `docs/DESIGN.md` for rationale)
-- Button border-radius: 8px (consistent with accessibility guidelines)
+### Font sizing and line height
+- Body text: `16px`, `line-height: 1.5` — set via `var(--font-body)` on `body`
+- Monospace elements (`code`, `.cmd`): `font-family: var(--font-mono)`, `line-height: 1.6`
+- Card border-radius: `6px` (`--radius-card`)
+- Badge border-radius: `4px` (`--radius-badge`)
+- Button border-radius: `6px` (`--radius-btn`)
 
 ---
 
@@ -855,7 +916,7 @@ The header includes a six-pixel coloured dot (`#sse-dot`) indicating SSE connect
 | `EventSource.CONNECTING` | `.connecting` | Amber |
 | `EventSource.CLOSED` | `.disconnected` | Red (no pulse) |
 
-Color values are drawn from the existing `--green`, `--amber`, and `--red` CSS tokens. The dot also transitions to `.disconnected` immediately on an `error` event, before the auto-reconnect delay fires.
+Color values use the T10 status dot tokens (`--color-green`, `--color-amber`, `--color-red`) — these are distinct from the palette tokens (`--green`, `--amber`, `--red`) and carry the DESIGN.md-specified status dot hex values. The dot also transitions to `.disconnected` immediately on an `error` event, before the auto-reconnect delay fires.
 
 ### Unblock inline flow (AC5/AC6)
 
