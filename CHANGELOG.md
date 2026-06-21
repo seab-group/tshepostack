@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Bash wrapper hardening — REAL_BASH symlink detection, chain risk, jq-free parsing (v7.1)
+
+The bash wrapper that gates high-risk commands now correctly handles three previously broken cases: symlinked wrapper paths were not excluded from REAL_BASH detection, chained commands like `cd /tmp && git push` could slip past classification, and decision-file parsing crashed on macOS systems without `jq`. All three are fixed. The test suite was rebuilt to cover these paths explicitly, growing from 5 to 10 bash-wrapper tests.
+
+#### Changed
+- **REAL_BASH detection** switched from `grep -v "$_SELF"` to a `realpath`-loop over `type -ap bash` candidates. The old grep compared path strings, so symlinks to the wrapper were not excluded. The new loop calls `realpath` on each candidate and skips any that resolves to the wrapper's own canonical path.
+- **Chain-risk evaluation** (`evaluate_chain_risk`) now splits the command on `&&`, `||`, and `;` using `python3 -c "import re, sys; re.split(...)"` and checks each segment with `check_risk`. A command like `cd /tmp && git push origin main` is correctly classified high even though `cd` alone is low.
+- **Decision-file JSON parsing** uses `python3 -c "import json, sys; ..."` throughout — both for writing request files and reading response files. Removes the `jq` dependency that caused wrapper failures on stock macOS.
+- **SUPERVISOR_DECISIONS_DIR guard** now exits 1 and writes a warning to stderr when the variable is unset, rather than proceeding silently. Prevents unintended command execution when the console is not running.
+- **Bash wrapper test suite** (`bash-wrapper.test.sh`) rewritten to use `env -i + /bin/bash "$WRAPPER"` invocation, eliminating shebang-loop `E2BIG` errors when multiple wrappers share PATH. New tests cover the symlink REAL_BASH case (AC1) and unset-directory guard (AC6). Total bash-wrapper tests: 10 (was 5). Total suite: 27 (was 15).
+
 ### QA smoke testing — browser-verified console UI checks (v7.1)
 
 QA agents can now verify the console UI is rendering correctly using a lightweight browser-based smoke test. When testing tasks with human-verify acceptance criteria, the QA agent runs `qa-smoke.sh` to assert that key DOM elements (page title, tab bar, Fleet tab) are present in the live browser, and captures a screenshot as proof — complementing server-side unit tests with real-world verification.
