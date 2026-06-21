@@ -18,7 +18,7 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
 | `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, and `resolveControlDir` — taskId regex validation, agent name validation, needs_human endpoint (v7.1) |
-| `console/qa-smoke.sh` | QA smoke test for console UI — asserts page title, nav bar, and Fleet tab are present via gstack browse (v7.1) |
+| `console/qa-smoke.sh` | QA smoke test for console UI — asserts page title, nav bar, Fleet tab presence, and T6 AC1/AC2/AC4/AC5 (Dicebear avatar src, elapsed time format, HIGH risk badge, Unblock button) via gstack browse (v7.1) |
 
 ---
 
@@ -593,11 +593,11 @@ The **Fleet tab** displays a real-time table of all agents in the fleet. Each ro
 
 | Column | Content | Source | Updates |
 |--------|---------|--------|---------|
-| Agent | Agent name (e.g., "agent-be", "agent-qa") | `fleet.conf` / API response | Static per session |
+| Agent | Agent name with 32×32 Dicebear initials avatar | `fleet.conf` / API response | Static per session |
 | State | Badge: **WORKING** (green) or **IDLE** (amber) | `presence/<agent>.json` | On state change; <1s via SSE |
 | Task | Task ID (e.g., "CONS-015") or "—" if no tasks | `live.json` task field | On task change; <1s via SSE |
 | Started | ISO timestamp when agent session started | `live.json` sessionStart | On session change; <1s via SSE |
-| Elapsed | Human-readable duration (e.g., "2m 15s") | Calculated: now - sessionStart | Every 5s (client-side timer) |
+| Elapsed | Human-readable duration (e.g., "2m 15s") | Calculated: now - sessionStart | Every 10s (client-side timer) |
 | Last tool | Tool name (e.g., "Read", "Edit", "Bash") | `live.json` lastTool | On tool change; <1s via SSE |
 | Summary | One-line task description | `live.json` lastSummary | On summary change; <1s via SSE |
 
@@ -616,11 +616,12 @@ When the console loads or receives a `fleet-update` SSE event, it calls `renderF
 
 1. Fetches `GET /api/fleet` (async JSON response)
 2. For each agent in the response, renders a table row with formatted columns:
-   - Elapsed time is recalculated as `Date.now() - new Date(sessionStart).getTime()`
+   - Avatar: constructs a Dicebear URL from `a.name`, renders `<img class="fleet-avatar">`. On `onerror`, reveals `.fleet-avatar-fallback` (grey circle `<div>`) instead.
+   - Elapsed time base: `baseTs` (from the `fleet-update` SSE event's `ts` field) when available, falling back to `Date.parse(a.sessionStart)` on the initial page load fetch
    - State badge CSS class is determined by the `state` field
    - Task ID defaults to "—" if missing
 3. Replaces the old table with the new one (preserving scroll position when possible)
-4. The elapsed-time columns continue to update every 5 seconds via client-side `setInterval` timer (independent of SSE updates)
+4. The elapsed-time columns continue to update every 10 seconds via client-side `setInterval` timer (independent of SSE updates)
 
 ---
 
@@ -807,6 +808,64 @@ Used for consistent timing across transitions and animations:
 
 The `console.js` file implements a vanilla JavaScript frontend for the console UI, providing real-time task and approval queue management with animations, accessibility, and dynamic content updates via SSE.
 
+### Fleet row avatars (AC1)
+
+Each fleet table row renders a 32×32 Dicebear "initials" avatar next to the agent name. The avatar URL is constructed client-side:
+
+```
+https://api.dicebear.com/7.x/initials/svg?seed={encodeURIComponent(a.name)}&size=32
+```
+
+The `<img class="fleet-avatar">` element is placed next to the agent name text. If the Dicebear CDN is unreachable, the image's `onerror` handler reveals a `.fleet-avatar-fallback` grey circle `<div>` in its place. Below 640px, both the avatar and fallback are hidden via `display: none` to keep the stacked-card layout readable.
+
+### SSE connection status dot (AC3)
+
+The header includes a six-pixel coloured dot (`#sse-dot`) indicating SSE connection health. A `setInterval` polling every 2 seconds checks `es.readyState` and applies CSS classes accordingly:
+
+| readyState | Class | Visual |
+|---|---|---|
+| `EventSource.OPEN` | (no class) | Green (pulsing) |
+| `EventSource.CONNECTING` | `.connecting` | Amber |
+| `EventSource.CLOSED` | `.disconnected` | Red (no pulse) |
+
+Color values are drawn from the existing `--green`, `--amber`, and `--red` CSS tokens. The dot also transitions to `.disconnected` immediately on an `error` event, before the auto-reconnect delay fires.
+
+### Unblock inline flow (AC5/AC6)
+
+Attention cards start with a single **Unblock** button. Clicking it:
+
+1. Hides the Unblock button (`hidden` attribute set).
+2. Reveals the textarea wrapper (removes `hidden` attribute from `#textarea-wrapper-{id}`).
+3. Reveals the **Send reply** button.
+4. If an AI draft is available, reveals the AI draft toggle.
+5. Focuses the textarea.
+
+Clicking **Send reply** (AC6):
+
+1. Reads the textarea value; if empty, focuses the textarea and returns without submitting.
+2. Sets button text to "Sending…" and disables it.
+3. POSTs to `POST /api/decision`:
+   ```json
+   { "action": "unblock", "text": "<operator note>", "agentName": "<ev.agent>", "taskId": "<ev.task_id>" }
+   ```
+4. After the request settles (success or error), calls `exitCard()` to fade and remove the card.
+
+### Responsive layout (AC8)
+
+Two CSS media query breakpoints ensure the console is usable on mobile:
+
+**640px breakpoint** — fleet table switches from a standard table to a stacked-card layout:
+- `<thead>` is hidden; `<tr>` renders as a `display: block` bordered card.
+- Each `<td>` uses `td::before { content: attr(data-label) }` to prefix the column name (e.g. "AGENT", "STATE").
+- Avatar and avatar-fallback are hidden to save space.
+- Row hover background is suppressed (touch devices do not hover).
+
+**375px breakpoint** — padding tightens to keep content readable at iPhone SE width:
+- `page-body` padding reduced to `12px 8px 48px`.
+- `page-header` padding and gap reduced.
+- Approval command font size drops to 11px.
+- Card action buttons are allowed to wrap.
+
 ### Two-section layout with per-section empty states
 
 The console divides operator workload into two independent sections:
@@ -828,8 +887,8 @@ Cards enter and exit the DOM with CSS animations driven by JavaScript:
 **Entry animation (AC3):** When a new card arrives via SSE, JavaScript prepends it with the `card-new` class. CSS plays a `slideIn 250ms var(--ease-enter)` animation, using the cubic-bezier bounce easing from the design tokens for a snappy entrance.
 
 **Exit animation (AC4):** When an operator approves or rejects a card, JavaScript:
-1. Adds the `card-exit` class to trigger a `fadeOut 150ms forwards` animation
-2. Waits 150ms for the fade to complete
+1. Adds the `card-exit` class to trigger a `fadeOut 300ms forwards` animation
+2. Waits 300ms for the fade to complete
 3. Removes the card from the DOM
 4. Updates queue counts and syncs the UI state
 
