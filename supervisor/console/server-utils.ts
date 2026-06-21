@@ -212,31 +212,57 @@ export function parseTaskLedger(ledgerDir: string): TaskEntry[] {
   });
 }
 
-export type ApprovalItem = Record<string, unknown>;
+export type GitSpawnResult = { code: number; out: string; err: string };
+export type GitSpawner = (args: string[]) => Promise<GitSpawnResult>;
 
-// Return unresolved approval request files from decisionsDir.
-// "Unresolved" = {agent}-{id}.json exists but {agent}-{id}.decision.json does NOT.
-// Returns [] when decisionsDir is falsy, absent, or unreadable (AC5, AC6).
-export function readApprovals(decisionsDir: string | undefined): ApprovalItem[] {
-  if (!decisionsDir) return [];
-  let files: string[];
-  try {
-    files = readdirSync(decisionsDir);
-  } catch {
-    return [];
+// Commit all staged + unstaged changes then push, retrying up to 3 times on rejection.
+// Pass spawner to inject a mock in tests; defaults to Bun.spawn with 30s timeout.
+export async function gitCommitAndPush(
+  controlDir: string,
+  commitMessage: string,
+  spawner?: GitSpawner,
+): Promise<void> {
+  const git: GitSpawner = spawner ?? (async (args) => {
+    const proc = Bun.spawn(["git", ...args], {
+      cwd: controlDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const timer = setTimeout(() => proc.kill(), 30_000);
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    clearTimeout(timer);
+    return { code: code ?? 1, out, err };
+  });
+
+  // Get current branch name for the reset target on retry (AC2).
+  const branchResult = await git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = branchResult.out.trim() || "main";
+
+  // Stage all working-tree changes (AC1: git add -A).
+  await git(["add", "-A"]);
+
+  // Commit — exit non-zero means nothing to commit; resolve void without push (AC5).
+  const commitResult = await git(["commit", "-m", commitMessage]);
+  if (commitResult.code !== 0) return;
+
+  // Attempt push up to 3 times; sync with remote between each failure (AC2, AC3, AC4).
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const pushResult = await git(["push", "origin", "HEAD"]);
+    if (pushResult.code === 0) return; // AC4: success
+
+    if (attempt < 3) {
+      await git(["fetch", "origin"]);
+      await git(["reset", "--hard", `origin/${branch}`]);
+      await git(["add", "-A"]);
+      await git(["commit", "-m", commitMessage]);
+    }
   }
-  const decisionSet = new Set(files.filter((f) => f.endsWith(".decision.json")));
-  return files
-    .filter((f) => f.endsWith(".json") && !f.endsWith(".decision.json"))
-    .filter((f) => !decisionSet.has(f.replace(/\.json$/, ".decision.json")))
-    .map((f): ApprovalItem | null => {
-      try {
-        return JSON.parse(readFileSync(join(decisionsDir, f), "utf8")) as ApprovalItem;
-      } catch {
-        return null;
-      }
-    })
-    .filter((item): item is ApprovalItem => item !== null);
+
+  throw new Error("git push failed after 3 retries"); // AC3
 }
 
 // Parse a mailbox file's content into an array of note objects.

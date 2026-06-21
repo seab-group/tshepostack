@@ -17,9 +17,9 @@ import {
   serveStatic,
   readFleetStatus,
   makeWatchHandler,
-  readApprovals,
+  gitCommitAndPush,
   type AgentStatus,
-  type ApprovalItem,
+  type GitSpawner,
 } from "./server-utils.ts";
 
 const TEST_PORT = 7843;
@@ -657,65 +657,88 @@ describe("parseMailboxNotes", () => {
   });
 });
 
-// --- T2: resolveControlDir ---
+// --- T7: gitCommitAndPush ---
 
-const rcdBase = join(tmpdir(), `rcd-test-${process.pid}`);
-
-function initGitDir(dir: string, remoteUrl: string): void {
-  mkdirSync(dir, { recursive: true });
-  spawnSync("git", ["init"], { cwd: dir, encoding: "utf8" });
-  spawnSync("git", ["remote", "add", "origin", remoteUrl], { cwd: dir, encoding: "utf8" });
+function makeSpawner(responses: Record<string, { code: number; out?: string; err?: string }[]>): {
+  spawner: GitSpawner;
+  calls: string[][];
+} {
+  const calls: string[][] = [];
+  const counters: Record<string, number> = {};
+  const spawner: GitSpawner = async (args) => {
+    calls.push([...args]);
+    const key = args[0];
+    counters[key] = (counters[key] ?? 0) + 1;
+    const queue = responses[key] ?? [];
+    const response = queue[counters[key] - 1] ?? queue[queue.length - 1] ?? { code: 0 };
+    return { code: response.code, out: response.out ?? "", err: response.err ?? "" };
+  };
+  return { spawner, calls };
 }
 
-describe("resolveControlDir (AC1) — returns first dir whose remote matches slug", () => {
-  const dir1 = join(rcdBase, "ac1-agent-a", "control");
-  const dir2 = join(rcdBase, "ac1-agent-b", "control");
-
-  test("returns dir with matching remote when one of two dirs matches", () => {
-    const prev = process.env.CONTROL_DIR;
-    delete process.env.CONTROL_DIR;
-    initGitDir(dir1, "git@github.com:other-org/other-repo.git");
-    initGitDir(dir2, "git@github.com:seab-group/tshepostack.git");
-    const result = resolveControlDir([dir1, dir2]);
-    process.env.CONTROL_DIR = prev;
-    expect(result).toBe(dir2);
+describe("gitCommitAndPush", () => {
+  test("uses git add -A, commit -m, and push origin HEAD in order (AC1)", async () => {
+    const { spawner, calls } = makeSpawner({
+      "rev-parse": [{ code: 0, out: "main" }],
+    });
+    await gitCommitAndPush("/fake/repo", "test: hello", spawner);
+    expect(calls[0]).toEqual(["rev-parse", "--abbrev-ref", "HEAD"]);
+    expect(calls[1]).toEqual(["add", "-A"]);
+    expect(calls[2]).toEqual(["commit", "-m", "test: hello"]);
+    expect(calls[3]).toEqual(["push", "origin", "HEAD"]);
   });
-});
 
-describe("resolveControlDir (AC2) — returns null when no dir matches", () => {
-  const dir1 = join(rcdBase, "ac2-agent-a", "control");
-  const dir2 = join(rcdBase, "ac2-agent-b", "control");
-
-  test("returns null when all dirs have unrelated remote URLs", () => {
-    const prev = process.env.CONTROL_DIR;
-    delete process.env.CONTROL_DIR;
-    initGitDir(dir1, "git@github.com:other-org/repo-a.git");
-    initGitDir(dir2, "git@github.com:other-org/repo-b.git");
-    const result = resolveControlDir([dir1, dir2]);
-    process.env.CONTROL_DIR = prev;
-    expect(result).toBeNull();
+  test("resolves void on success without retry (AC4)", async () => {
+    const { spawner } = makeSpawner({ "rev-parse": [{ code: 0, out: "main" }] });
+    await expect(gitCommitAndPush("/fake/repo", "msg", spawner)).resolves.toBeUndefined();
   });
-});
 
-describe("resolveControlDir (AC3) — CONTROL_DIR env var short-circuits git", () => {
-  test("returns CONTROL_DIR env var without running git on non-existent dir", () => {
-    const prev = process.env.CONTROL_DIR;
-    process.env.CONTROL_DIR = "/fake/control/path";
-    const result = resolveControlDir([join(rcdBase, "nonexistent")]);
-    process.env.CONTROL_DIR = prev;
-    expect(result).toBe("/fake/control/path");
+  test("resolves void without push when commit exits non-zero (AC5)", async () => {
+    const { spawner, calls } = makeSpawner({
+      "rev-parse": [{ code: 0, out: "main" }],
+      commit: [{ code: 1, err: "nothing to commit" }],
+    });
+    await expect(gitCommitAndPush("/fake/repo", "msg", spawner)).resolves.toBeUndefined();
+    expect(calls.some((a) => a[0] === "push")).toBe(false);
   });
-});
 
-describe("resolveControlDir (AC5) — skips non-existent dirs silently", () => {
-  test("does not throw for a path that does not exist, returns null", () => {
-    const prev = process.env.CONTROL_DIR;
-    delete process.env.CONTROL_DIR;
-    let result: string | null;
-    expect(() => {
-      result = resolveControlDir([join(rcdBase, "missing-dir", "control")]);
-    }).not.toThrow();
-    expect(result!).toBeNull();
-    process.env.CONTROL_DIR = prev;
+  test("retries with fetch+reset+re-stage+re-commit after first push failure (AC2)", async () => {
+    let pushCount = 0;
+    const { spawner, calls } = makeSpawner({
+      "rev-parse": [{ code: 0, out: "main" }],
+      push: [{ code: 128, err: "rejected" }, { code: 0 }],
+    });
+    // Override push counter tracking via custom spawner that delegates
+    const wrappedSpawner: GitSpawner = async (args) => {
+      if (args[0] === "push") pushCount++;
+      return spawner(args);
+    };
+    await expect(gitCommitAndPush("/fake/repo", "msg", wrappedSpawner)).resolves.toBeUndefined();
+    const fetchIdx = calls.findIndex((a) => a[0] === "fetch");
+    const resetIdx = calls.findIndex((a) => a[0] === "reset");
+    expect(fetchIdx).toBeGreaterThan(-1);
+    expect(resetIdx).toBeGreaterThan(fetchIdx);
+    expect(calls[resetIdx]).toEqual(["reset", "--hard", "origin/main"]);
+    expect(pushCount).toBe(2);
+  });
+
+  test("throws Error after 3 failed push attempts (AC3)", async () => {
+    const { spawner } = makeSpawner({
+      "rev-parse": [{ code: 0, out: "main" }],
+      push: [{ code: 1 }],
+    });
+    await expect(gitCommitAndPush("/fake/repo", "msg", spawner)).rejects.toThrow(
+      "git push failed after 3 retries",
+    );
+  });
+
+  test("uses origin/<branch> from rev-parse in reset command (AC2 branch name)", async () => {
+    const { spawner, calls } = makeSpawner({
+      "rev-parse": [{ code: 0, out: "feat/my-branch\n" }],
+      push: [{ code: 1, err: "rejected" }, { code: 0 }],
+    });
+    await gitCommitAndPush("/fake/repo", "msg", spawner);
+    const resetCall = calls.find((a) => a[0] === "reset");
+    expect(resetCall).toEqual(["reset", "--hard", "origin/feat/my-branch"]);
   });
 });
