@@ -96,8 +96,8 @@ body::after {
   width: 100%;
   display: flex;
   border-bottom: 1px solid var(--border);
-  margin: 8px -24px 0;
-  padding: 0 24px;
+  margin: var(--space-2) calc(var(--space-6) * -1) 0;
+  padding: 0 var(--space-6);
 }
 .tab-btn {
   font-family: var(--mono);
@@ -108,7 +108,7 @@ body::after {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  padding: 10px var(--space-4);
+  padding: var(--space-3) var(--space-4);
   cursor: pointer;
   transition: color var(--dur-micro), border-color var(--dur-micro);
   margin-bottom: -1px;
@@ -123,7 +123,7 @@ body::after {
 .sse-indicator {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-micro);
@@ -155,7 +155,7 @@ body::after {
 .page-body {
   max-width: 800px;
   margin: 0 auto;
-  padding: var(--space-6) var(--space-6) 48px;
+  padding: var(--space-6) var(--space-6) calc(var(--space-8) + var(--space-4));
   display: flex;
   flex-direction: column;
   gap: var(--space-8);
@@ -165,7 +165,7 @@ body::after {
 .section-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-3);
   margin-bottom: var(--space-3);
 }
 .section-title {
@@ -179,7 +179,7 @@ body::after {
 .section-badge {
   font-family: var(--mono);
   font-size: 10px;
-  padding: 2px 6px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-badge);
   font-weight: 500;
 }
@@ -198,8 +198,8 @@ body::after {
   border: 1px solid var(--border);
   border-top: 3px solid var(--amber);
   border-radius: var(--radius-card);
-  padding: 20px;
-  margin-bottom: 10px;
+  padding: var(--space-4);
+  margin-bottom: var(--space-3);
   transition: border-color var(--dur-short) var(--ease-enter);
 }
 .attention-card:focus-within {
@@ -210,7 +210,7 @@ body::after {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3);
 }
 .card-agent {
   font-family: var(--mono);
@@ -240,7 +240,7 @@ body::after {
   background: rgba(245, 158, 11, 0.08);
   border: 1px solid rgba(245, 158, 11, 0.2);
   border-radius: var(--radius-badge);
-  padding: 2px var(--space-2);
+  padding: var(--space-1) var(--space-2);
 }
 
 .card-task-title {
@@ -254,7 +254,7 @@ body::after {
   color: var(--text-dim);
   background: var(--surface-2);
   border-left: 2px solid var(--border);
-  padding: 10px var(--space-3);
+  padding: var(--space-3) var(--space-3);
   border-radius: 0 var(--radius-badge) var(--radius-badge) 0;
   margin-bottom: var(--space-3);
   font-style: italic;
@@ -268,7 +268,7 @@ body::after {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-micro);
-  margin-bottom: 6px;
+  margin-bottom: var(--space-2);
 }
 .card-ac-row {
   display: flex;
@@ -310,7 +310,7 @@ body::after {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-micro);
-  margin-bottom: 6px;
+  margin-bottom: var(--space-2);
   display: block;
 }
 
@@ -325,14 +325,14 @@ body::after {
 .ai-draft-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-micro);
   background: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-badge);
-  padding: 5px 10px;
+  padding: var(--space-1) var(--space-3);
   cursor: pointer;
   transition: border-color var(--dur-micro), color var(--dur-micro);
   margin-right: auto;
@@ -349,7 +349,7 @@ body::after {
   color: var(--amber);
   background: rgba(245, 158, 11, 0.1);
   border-radius: var(--radius-badge);
-  padding: 1px var(--space-1);
+  padding: var(--space-1) var(--space-1);
 }
 
 /* AI draft panel */
@@ -357,14 +357,14 @@ body::after {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  padding: 14px;
+  padding: var(--space-3);
   margin-bottom: var(--space-3);
 }
 .ai-draft-panel-header {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: 10px;
+  margin-bottom: var(--space-3);
 }
 .ai-draft-panel-title {
   font-family: var(--mono);
@@ -379,13 +379,13 @@ body::after {
   background: rgba(245, 158, 11, 0.08);
   border: 1px solid rgba(245, 158, 11, 0.15);
   border-radius: var(--radius-badge);
-  padding: 2px 6px;
+  padding: var(--space-1) var(--space-2);
 }
 .ai-draft-text {
   font-size: 14px;
   color: var(--text-dim);
   line-height: 1.6;
-  margin-bottom: 10px;
+  margin-bottom: var(--space-3);
 }
 .ai-draft-use-btn {
   font-family: var(--mono);
@@ -394,7 +394,7 @@ body::after {
   background: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-btn);
-  padding: var(--space-1) 10px;
+  padding: var(--space-1) var(--space-3);
   cursor: pointer;
 }
 .ai-draft-use-btn:hover {
@@ -407,8 +407,8 @@ body::after {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  padding: 18px 20px;
-  margin-bottom: 10px;
+  padding: var(--space-4) var(--space-4);
+  margin-bottom: var(--space-3);
   transition: border-color var(--dur-short);
 }
 .approval-card.high { border-top: 3px solid var(--red); }
@@ -424,7 +424,7 @@ body::after {
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 500;
-  padding: 2px 6px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-badge);
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -440,7 +440,7 @@ body::after {
   border: 1px solid var(--border);
   border-radius: var(--radius-badge);
   padding: var(--space-2) var(--space-3);
-  margin: 10px 0;
+  margin: var(--space-3) 0;
   word-break: break-all;
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -450,14 +450,14 @@ body::after {
 .approval-description {
   font-size: 14px;
   color: var(--text-dim);
-  margin-bottom: 10px;
+  margin-bottom: var(--space-3);
   line-height: 1.5;
 }
 .file-pills {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 14px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 .file-pill {
   font-family: var(--mono);
@@ -466,14 +466,14 @@ body::after {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-badge);
-  padding: 3px var(--space-2);
+  padding: var(--space-1) var(--space-2);
 }
 .no-files-note {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-micro);
   font-style: italic;
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3);
 }
 
 .approval-footer {
@@ -491,7 +491,7 @@ body::after {
 
 /* ── Buttons ── */
 .btn-reject {
-  padding: 6px var(--space-4);
+  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-btn);
   background: none;
@@ -507,7 +507,7 @@ body::after {
 .btn-reject:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .btn-approve {
-  padding: 6px 18px;
+  padding: var(--space-2) var(--space-4);
   border: none;
   border-radius: var(--radius-btn);
   background: var(--amber);
@@ -520,7 +520,7 @@ body::after {
   transition: background var(--dur-micro), opacity var(--dur-micro);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
 }
 .btn-approve:hover { background: var(--amber-dim); }
 .btn-approve:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -537,7 +537,7 @@ body::after {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .btn-send {
-  padding: var(--space-2) 18px;
+  padding: var(--space-2) var(--space-4);
   border: none;
   border-radius: var(--radius-btn);
   background: var(--amber);
@@ -585,10 +585,10 @@ body::after {
   background: rgba(34, 197, 94, 0.08);
   border: 1px solid rgba(34, 197, 94, 0.2);
   border-radius: var(--radius-card);
-  padding: 10px 14px;
+  padding: var(--space-3) var(--space-3);
   font-size: 14px;
   color: var(--green);
-  margin-bottom: 10px;
+  margin-bottom: var(--space-3);
   animation: fadeIn var(--dur-short) var(--ease-enter);
 }
 @keyframes fadeIn {
@@ -601,8 +601,8 @@ body::after {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  padding: 14px 20px;
-  margin-bottom: 10px;
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
   opacity: 0.55;
 }
 .timeout-label {
@@ -621,7 +621,7 @@ body::after {
 .empty-section {
   border: 1px dashed var(--border);
   border-radius: var(--radius-card);
-  padding: 40px 20px;
+  padding: var(--space-8) var(--space-4);
   text-align: center;
   display: flex;
   flex-direction: column;
@@ -650,8 +650,8 @@ body::after {
   background: rgba(239, 68, 68, 0.05);
   border: 1px solid rgba(239, 68, 68, 0.2);
   border-radius: var(--radius-card);
-  padding: 14px var(--space-4);
-  margin-bottom: 10px;
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
 }
 .error-card-title {
   font-family: var(--mono);
@@ -680,10 +680,10 @@ body::after {
   background: rgba(245, 158, 11, 0.06);
   border: 1px solid rgba(245, 158, 11, 0.2);
   border-radius: var(--radius-card);
-  padding: 10px 14px;
+  padding: var(--space-3) var(--space-3);
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-3);
   font-family: var(--mono);
   font-size: 12px;
   color: var(--amber);
@@ -725,7 +725,7 @@ body::after {
   border-bottom: 1px solid var(--border);
 }
 .fleet-table td {
-  padding: 10px var(--space-3);
+  padding: var(--space-3) var(--space-3);
   font-family: var(--mono);
   font-size: 12px;
   border-bottom: 1px solid var(--border);
@@ -794,7 +794,7 @@ body::after {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  padding: 2px 6px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-badge);
   display: inline-block;
   white-space: nowrap;
@@ -828,7 +828,7 @@ body::after {
 
 /* ── Cost placeholder ── */
 .cost-placeholder {
-  padding: 64px 24px;
+  padding: calc(var(--space-8) * 2) var(--space-6);
   text-align: center;
   font-family: var(--mono);
   font-size: 13px;
@@ -869,7 +869,7 @@ body::after {
   }
   .fleet-table td {
     border-bottom: none;
-    padding: 3px 0;
+    padding: var(--space-1) 0;
     display: flex;
     align-items: flex-start;
     gap: var(--space-2);
@@ -883,7 +883,7 @@ body::after {
     color: var(--text-micro);
     min-width: 64px;
     flex-shrink: 0;
-    padding-top: 2px;
+    padding-top: var(--space-1);
   }
   .fleet-agent-cell { flex-wrap: wrap; }
   .fleet-summary { max-width: none; white-space: normal; }
