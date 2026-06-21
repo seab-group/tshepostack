@@ -2,20 +2,22 @@
 
 ## [Unreleased]
 
-### Queue tab bootstrap — GET /api/queue + fetchQueue() client (v7.1)
+### CONTROL_DIR auto-detection — multi-agent iteration with graceful null (v7.1)
 
-The Queue tab now populates immediately when opened, even if the page is loaded after a blocking event was already sent. Operators no longer see a blank Queue tab when the bash wrapper has already blocked a command before they opened the console — the tab fetches existing pending items on activate, without waiting for a new SSE event.
+The console server now discovers the control repository by scanning all agent checkout directories rather than reading only the first agent's remote. If no agent directory matches the control-repo slug, the server starts anyway and logs a warning — it no longer clones the control repo or exits on failure.
 
 #### Added
-- `GET /api/queue` endpoint in `server.ts`: returns `{ approvals: ApprovalItem[], attention: AttentionItem[] }` — pending approval requests (unresolved `{agent}-{id}.json` files from `SUPERVISOR_DECISIONS_DIR`) and `needs_human` ledger entries
-- `readApprovals(decisionsDir)` utility in `server-utils.ts`: reads unresolved approval request files; an "unresolved" file is one where `{agent}-{id}.json` exists but `{agent}-{id}.decision.json` does NOT; returns `[]` when the directory is unset, absent, or unreadable (no 500/503)
-- `fetchQueue()` in `console.js`: async function that calls `GET /api/queue` and renders approval and attention cards into the DOM with deduplication — skips any card whose element id (`approval-{id}`, `attention-{id}`) already exists in the DOM
-- `fetchQueue()` called on Queue tab activate (`switchTab('queue')`) and on SSE reconnect (`EventSource.onopen`) so the tab re-syncs after dropped connections
-- Three new test describe blocks in `server.test.ts` covering AC1 (unresolved-only approvals), AC5 (no `SUPERVISOR_DECISIONS_DIR`), and AC6 (missing directory) — total server tests raised from 10 to 14
+- `resolveControlDir(agentDirs: string[]): string | null` exported from `server-utils.ts`: iterates each agent control path, runs `git -C <dir> remote get-url origin`, returns the first directory whose remote URL contains `seab-group/tshepostack`
+- Graceful null return: if no agent directory matches, `resolveControlDir` returns `null` and logs a warning; the server binds and serves the static UI even without a control repo
+- Silent skip for unreadable directories: non-existent paths and `git remote get-url` failures are caught and skipped without crashing
+- `CONTROL_DIR` env var short-circuit: if set, returned immediately without running any git commands
+- Startup cache: `resolveControlDir` called once at startup; result stored in `const controlDir` — not re-computed on subsequent requests
+- Four new describe blocks in `server.test.ts` covering AC1 (first match), AC2 (null on no match), AC3 (env override), and AC5 (missing dir skipped)
 
 #### Changed
-- `console.js` SSE `open` handler: now calls `fetchQueue()` on reconnect (previously only hid the reconnect banner)
-- Document title format confirmed: `(N) Fleet Console` when N > 0, `Fleet Console` when N = 0 — handled by pre-existing `syncState()` with no new code required
+- `resolveControlDir` moved from `server.ts` to `server-utils.ts` and exported for testability
+- Previous behavior (read only first agent's remote, block on git clone, exit on failure) replaced by multi-agent iteration with null return
+- Server now continues serving if control repo is not found, with a `WARNING:` log line instead of crashing
 
 ### QA smoke testing — browser-verified console UI checks (v7.1)
 

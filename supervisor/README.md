@@ -14,10 +14,10 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support) |
 | `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility) |
 | `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces) |
-| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation, fleet status reading, SSE helpers, watch handler (v7.1) |
+| `console/server-utils.ts` | Utility exports — `resolveControlDir`, parsing ledger/mailbox, task ID validation, fleet status reading, SSE helpers, watch handler (v7.1) |
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
-| `console/bash-wrapper.test.sh` | Bash unit tests for REAL_BASH symlink detection (AC1), chain-risk splitting via python3 (AC2), jq-free approval polling (AC3), and SUPERVISOR_DECISIONS_DIR guard (AC6) (v7.1) |
-| `console/server.test.ts` | Bun tests for endpoint security — taskId regex validation, agent name validation, needs_human endpoint (v7.1) |
+| `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
+| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, and `resolveControlDir` — taskId regex validation, agent name validation, needs_human endpoint (v7.1) |
 | `console/qa-smoke.sh` | QA smoke test for console UI — asserts page title, nav bar, and Fleet tab are present via gstack browse (v7.1) |
 
 ---
@@ -190,56 +190,56 @@ Decision files are ephemeral and cleaned up automatically on two schedules to pr
 
 ## Console server — zero-config control repo discovery (v7.1)
 
-The console server reads task ledgers, mailboxes, and decision files from the control repository. To eliminate manual env setup, `supervisor/console/server.ts` auto-detects the control repo on startup.
+The console server reads task ledgers, mailboxes, and decision files from the control repository. Rather than requiring a hardcoded path, `supervisor/console/server.ts` discovers the control repo automatically by scanning each agent's checkout directory.
 
-### How auto-detection works
+### How auto-detection works (`resolveControlDir`)
+
+`resolveControlDir(agentDirs: string[])` is exported from `server-utils.ts` and called once at startup. The result is cached in a module-level `controlDir` constant — git is never called again on subsequent requests (AC4).
 
 When you start the console server:
 
-1. **Check env override.** If `CONTROL_DIR` is set, use that path directly (backward-compatible fallback). Skip the next steps.
+1. **Check env override (AC3).** If the `CONTROL_DIR` environment variable is set, return its value immediately. No git commands are run; the value is used as-is.
 
-2. **Resolve control repo URL.** Read `supervisor/fleet.conf` (same directory as run-agent.sh), skip comment lines and blank lines, take the first agent name. Then read the git remote URL:
-   ```bash
-   git -C ~/agents/<first-agent>/control remote get-url origin
+2. **Iterate all agent checkout directories (AC1).** Build the list of agent control paths from `fleet.conf`:
    ```
-   This gives the control repo URL without requiring a separate config file.
-
-3. **Clone if needed.** If `~/agents/console/control` does not exist, clone the control repo there:
-   ```bash
-   git clone <url> ~/agents/console/control
+   ~/agents/<each-agent>/control
    ```
-   This is a **blocking operation** — the HTTP server does not bind until the clone succeeds.
+   For each path, run:
+   ```bash
+   git -C <path> remote get-url origin
+   ```
+   Return the **first** directory whose origin URL contains `seab-group/tshepostack` (substring match — works for both SSH and HTTPS remotes).
 
-4. **Skip if already present.** If `~/agents/console/control` already exists, start immediately without re-cloning.
+3. **Skip unreadable directories silently (AC5).** If a path does not exist, or `git remote get-url` exits non-zero, that entry is skipped without logging and without throwing. The loop continues to the next agent.
 
-5. **Graceful failure.** If the clone fails (network error, bad URL, missing repo), the server exits with a non-zero code and logs a descriptive error. It does NOT start a server without the control repo.
+4. **Return null on no match (AC2).** If no agent directory yields a matching remote, `resolveControlDir` returns `null` and logs:
+   ```
+   [resolveControlDir] no agent directory matched control-repo remote
+   ```
+   The server continues to bind and serve. API routes that require the control repo (mailbox, ledger, attention) will be unavailable, but the static UI and `/health` endpoint still respond.
 
 ### Startup log example
 
 ```bash
 $ bun run supervisor/console/server.ts
-[console] CONTROL_DIR not set, auto-detecting...
-[console] First agent from fleet.conf: agent-be
-[console] Reading control URL from ~/agents/agent-be/control/.git/config
-[console] Control URL: git@github.com:my-org/my-control-repo.git
-[console] Cloning control repo from git@github.com:my-org/my-control-repo.git...
-[console] Clone complete at ~/agents/console/control
-[console] Starting HTTP server on port 7842
+Control dir: /Users/<user>/agents/agent-be/control
+Console server listening on http://127.0.0.1:7842
 ```
 
-### Setup implications
+If no agent directory matches:
+```bash
+$ bun run supervisor/console/server.ts
+WARNING: control dir not found — mailbox and ledger routes unavailable
+Console server listening on http://127.0.0.1:7842
+```
 
-**Old workflow** (before v7.1):
+### Using the env override
+
 ```bash
 CONTROL_DIR=/path/to/control bun run supervisor/console/server.ts
 ```
 
-**New workflow** (v7.1):
-```bash
-bun run supervisor/console/server.ts
-```
-
-The server now reads `fleet.conf` to find the control repo without manual setup. Operators upgrading from v7.0 can delete any hardcoded `CONTROL_DIR` exports in their systemd/launchd service files.
+The `CONTROL_DIR` env var takes absolute precedence over auto-detection. Use it when the agent checkout directories are not under `~/agents/` (non-standard machine layouts).
 
 ---
 
@@ -914,9 +914,22 @@ Response:
 
 **Mailbox parsing edge cases (AC7):** The `parseMailboxNotes()` utility handles mailbox files containing only the `<!-- cleared by ... -->` marker without crashing — returns an empty array.
 
+**`resolveControlDir` tests (T2 AC1–AC3, AC5):** Four describe blocks cover the control-repo discovery function:
+
+| Describe block | What it tests |
+|---|---|
+| `resolveControlDir (AC1)` | Returns the first dir whose git remote URL contains the control-repo slug; other dirs are skipped |
+| `resolveControlDir (AC2)` | Returns `null` when all agent dirs have unrelated remote URLs |
+| `resolveControlDir (AC3)` | Returns `CONTROL_DIR` env var without calling `git`, even when the path does not exist |
+| `resolveControlDir (AC5)` | Does not throw for a non-existent directory path; returns `null` |
+
+Each test creates temporary git repos with `git init` + `git remote add origin <url>` to control exactly which remote URLs are visible. `process.env.CONTROL_DIR` is saved and restored around each test.
+
+AC4 (startup cache) is human-verify: `resolveControlDir` is called once in `server.ts` at module level and the result stored in `const controlDir` — never re-called on subsequent requests.
+
 ### Test results
 
-All 27 tests pass (10 bash-wrapper + 17 server tests). Run the full suite with:
+All 37 tests pass (8 bash-wrapper + 29 server tests). Run the full suite with:
 
 ```bash
 bun test supervisor/console/     # runs all tests, exit 0 on pass
