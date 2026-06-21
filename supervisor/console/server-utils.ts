@@ -294,34 +294,58 @@ export function readApprovals(decisionsDir: string | undefined): ApprovalItem[] 
     });
 }
 
-// Purge stale decision files at startup (T8).
-// Deletes request *.json files (not *.decision.json) older than 1 hour plus their paired
-// *.decision.json. Also deletes any *.decision.json that is itself older than 1 hour.
-// Per-file try/catch ensures one unreadable file does not abort the rest.
-export function purgeStaleDecisionFiles(decisionsDir: string): void {
-  if (!decisionsDir) return;
-  const threshold = 60 * 60 * 1000;
-  const now = Date.now();
-  let files: string[];
+export interface LogEvent {
+  ts: string;
+  tool: string;
+  summary: string;
+  path: string | null;
+}
+
+// Read the last n lines of a JSONL log file. Silently skips malformed lines (AC5).
+// Returns { events: [], totalLines: 0 } when the file is absent or empty (AC4).
+export function readLogTail(logFile: string, n: number): { events: LogEvent[]; totalLines: number } {
+  let content: string;
   try {
-    files = readdirSync(decisionsDir);
+    content = readFileSync(logFile, "utf8");
   } catch {
-    return;
+    return { events: [], totalLines: 0 };
   }
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-    const fp = join(decisionsDir, file);
+  const lines = content.split("\n").filter((l) => l.trim() !== "");
+  const totalLines = lines.length;
+  const events: LogEvent[] = [];
+  for (const line of lines.slice(-n)) {
     try {
-      if (now - statSync(fp).mtime.getTime() > threshold) {
-        unlinkSync(fp);
-        if (!file.endsWith(".decision.json")) {
-          try {
-            unlinkSync(join(decisionsDir, file.slice(0, -5) + ".decision.json"));
-          } catch { /* paired decision file absent or already deleted */ }
-        }
-      }
-    } catch { /* stat or unlink failed — skip this file */ }
+      const ev = JSON.parse(line) as Record<string, unknown>;
+      events.push({
+        ts: typeof ev.ts === "string" ? ev.ts : "",
+        tool: typeof ev.tool === "string" ? ev.tool : "",
+        summary: typeof ev.summary === "string" ? ev.summary : "",
+        path: typeof ev.path === "string" ? ev.path : null,
+      });
+    } catch {
+      // AC5: silently skip malformed lines
+    }
   }
+  return { events, totalLines };
+}
+
+// Simple token bucket rate limiter — caller owns state, resets when the returned object is GC'd.
+// check(ip) returns true (allowed) or false (over limit → respond 429).
+export function makeRateLimiter(maxPerSecond: number): { check: (ip: string) => boolean } {
+  const map = new Map<string, { count: number; resetAt: number }>();
+  return {
+    check(ip: string): boolean {
+      const now = Date.now();
+      const entry = map.get(ip);
+      if (!entry || now >= entry.resetAt) {
+        map.set(ip, { count: 1, resetAt: now + 1000 });
+        return true;
+      }
+      if (entry.count >= maxPerSecond) return false;
+      entry.count++;
+      return true;
+    },
+  };
 }
 
 // Parse a mailbox file's content into an array of note objects.

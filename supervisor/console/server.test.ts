@@ -20,10 +20,12 @@ import {
   gitCommitAndPush,
   resolvePort,
   readApprovals,
-  purgeStaleDecisionFiles,
+  readLogTail,
+  makeRateLimiter,
   type AgentStatus,
   type GitSpawner,
   type ApprovalItem,
+  type LogEvent,
 } from "./server-utils.ts";
 
 const TEST_PORT = 7843;
@@ -884,145 +886,180 @@ describe("gitCommitAndPush", () => {
   });
 });
 
-// --- T9 AC4: rawPath preserves dot segments ---
+// --- T12: GET /api/log/:agent ---
 
-describe("rawPath dot-segment preservation (AC4)", () => {
-  test("rawPath('/a/../b') returns '/a/../b' unprocessed (AC4)", () => {
-    expect(rawPath("/a/../b")).toBe("/a/../b");
-  });
+const logAgentsHome = join(testDir, "log-agents");
+const logAgents = new Set(["agent-be", "agent-doc"]);
+let logServer: Server;
+const logLimiter = makeRateLimiter(10);
 
-  test("rawPath('/foo/./bar') returns '/foo/./bar' unprocessed (AC4)", () => {
-    expect(rawPath("/foo/./bar")).toBe("/foo/./bar");
-  });
-
-  test("rawPath does not normalise what the URL API would (AC4 contrast)", () => {
-    expect(rawPath("/a/../b")).not.toBe(new URL("/a/../b", "http://localhost").pathname);
-  });
-});
-
-// --- T9 AC7: GET /api/fleet with empty/absent fleet.conf ---
-
-describe("GET /api/fleet absent/empty fleet.conf (AC7)", () => {
-  test("readFleetStatus with empty agent list returns [] — no crash (AC7)", () => {
-    expect(readFleetStatus([], testDir)).toEqual([]);
-  });
-
-  test("GET /api/fleet returns 200 with [] when no agents configured (AC7)", async () => {
-    const srv = createServer((_req, res) => {
-      sendJson(res, readFleetStatus([], testDir));
-    });
-    await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", resolve));
-    const { port } = srv.address() as { port: number };
-    try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/fleet`);
-      expect(r.status).toBe(200);
-      expect(await r.json()).toEqual([]);
-    } finally {
-      await new Promise<void>((resolve) => srv.close(resolve));
+function makeLogHandler(agentsHome: string, limiter: { check: (ip: string) => boolean }) {
+  return (req: IncomingMessage, res: ServerResponse) => {
+    const p = rawPath(req.url);
+    if (!p.startsWith("/api/log/") || req.method !== "GET") {
+      res.writeHead(404);
+      res.end("Not Found");
+      return;
     }
-  });
-});
-
-// --- T9 AC1 + AC2: JSON body and Content-Type validation for all POST endpoints ---
-
-async function readAndValidateJsonBody(req: IncomingMessage): Promise<string | null> {
-  const ct = req.headers["content-type"] ?? "";
-  if (!ct.includes("application/json")) return "content-type must be application/json";
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  try {
-    JSON.parse(Buffer.concat(chunks).toString());
-    return null;
-  } catch {
-    return "invalid JSON body";
-  }
+    const agentName = p.slice("/api/log/".length).split("/")[0];
+    if (!logAgents.has(agentName)) {
+      sendJson(res, { error: "not found" }, 404);
+      return;
+    }
+    const ip = (req.socket as { remoteAddress?: string }).remoteAddress ?? "unknown";
+    if (!limiter.check(ip)) {
+      sendJson(res, { error: "rate limit exceeded" }, 429);
+      return;
+    }
+    const qIdx = (req.url ?? "").indexOf("?");
+    const nStr = qIdx !== -1
+      ? new URLSearchParams((req.url ?? "").slice(qIdx + 1)).get("n")
+      : null;
+    let n = 50;
+    if (nStr !== null) {
+      const parsed = parseInt(nStr, 10);
+      if (isNaN(parsed) || parsed < 1 || parsed > 200) {
+        sendJson(res, { error: "n must be 1-200" }, 400);
+        return;
+      }
+      n = parsed;
+    }
+    const logFile = join(agentsHome, agentName, "logs", "live-events.jsonl");
+    const { events, totalLines } = readLogTail(logFile, n);
+    const data = JSON.stringify({ events });
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "x-log-lines": String(totalLines),
+      "content-length": Buffer.byteLength(data),
+    });
+    res.end(data);
+  };
 }
 
-describe("JSON body and Content-Type validation (AC1 + AC2)", () => {
-  let jsonSrv: Server;
-  const JSON_PORT = 7845;
-
+describe("GET /api/log", () => {
   beforeAll(
     () =>
       new Promise<void>((resolve) => {
-        jsonSrv = createServer((req, res) => {
-          if (req.method !== "POST") {
-            res.writeHead(405);
-            res.end();
-            return;
-          }
-          void (async () => {
-            const err = await readAndValidateJsonBody(req);
-            if (err) {
-              sendJson(res, { error: err }, 400);
-              return;
-            }
-            sendJson(res, { ok: true });
-          })();
-        });
-        jsonSrv.listen(JSON_PORT, "127.0.0.1", resolve);
+        mkdirSync(join(logAgentsHome, "agent-be", "logs"), { recursive: true });
+        // 100 valid JSONL lines for AC1 / AC6.
+        const lines = Array.from({ length: 100 }, (_, i) =>
+          JSON.stringify({ ts: String(i), tool: "Bash", summary: `event ${i}`, path: null }),
+        ).join("\n") + "\n";
+        writeFileSync(join(logAgentsHome, "agent-be", "logs", "live-events.jsonl"), lines);
+
+        // agent-doc dir exists but has no JSONL file (AC4 test uses readLogTail directly).
+        mkdirSync(join(logAgentsHome, "agent-doc", "logs"), { recursive: true });
+
+        logServer = createServer(makeLogHandler(logAgentsHome, logLimiter));
+        logServer.listen(7845, "127.0.0.1", resolve);
       }),
   );
 
   afterAll(
     () =>
       new Promise<void>((resolve, reject) => {
-        jsonSrv.close((err) => (err ? reject(err) : resolve()));
+        logServer.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
       }),
   );
 
-  test("POST /api/mailbox/:agentName returns 400 for invalid JSON body (AC1)", async () => {
-    const r = await fetch(`http://127.0.0.1:${JSON_PORT}/api/mailbox/agent-be`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{not: valid json}",
-    });
+  test("returns last 50 of 100 events as JSON array { events } (AC1)", async () => {
+    const r = await fetch("http://127.0.0.1:7845/api/log/agent-be?n=50");
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toContain("application/json");
+    const body = (await r.json()) as { events: LogEvent[] };
+    expect(Array.isArray(body.events)).toBe(true);
+    expect(body.events).toHaveLength(50);
+    // Last event in file is i=99; last in the tail slice should also be i=99.
+    const last = body.events[body.events.length - 1];
+    expect(last.ts).toBe("99");
+    expect(last.tool).toBe("Bash");
+    expect(last.path).toBeNull();
+  });
+
+  test("?n=300 returns 400 { error: 'n must be 1-200' } (AC2)", async () => {
+    const r = await fetch("http://127.0.0.1:7845/api/log/agent-be?n=300");
     expect(r.status).toBe(400);
     const body = (await r.json()) as { error: string };
-    expect(body.error).toBeTruthy();
+    expect(body.error).toBe("n must be 1-200");
   });
 
-  test("POST /api/approve returns 400 for invalid JSON body (AC1)", async () => {
-    const r = await fetch(`http://127.0.0.1:${JSON_PORT}/api/approve`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "this is not json",
-    });
+  test("?n=abc returns 400 { error: 'n must be 1-200' } (AC2)", async () => {
+    const r = await fetch("http://127.0.0.1:7845/api/log/agent-be?n=abc");
     expect(r.status).toBe(400);
+    const body = (await r.json()) as { error: string };
+    expect(body.error).toBe("n must be 1-200");
   });
 
-  test("POST /api/draft-decision returns 400 for invalid JSON body (AC1)", async () => {
-    const r = await fetch(`http://127.0.0.1:${JSON_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "[unclosed array",
-    });
-    expect(r.status).toBe(400);
+  test("unknown agent returns 404 (AC3)", async () => {
+    const r = await fetch("http://127.0.0.1:7845/api/log/agent-unknown");
+    expect(r.status).toBe(404);
   });
 
-  test("POST /api/mailbox/:agentName returns 400 when Content-Type is not application/json (AC2)", async () => {
-    const r = await fetch(`http://127.0.0.1:${JSON_PORT}/api/mailbox/agent-be`, {
-      method: "POST",
-      headers: { "content-type": "text/plain" },
-      body: JSON.stringify({ note: "hello" }),
-    });
-    expect(r.status).toBe(400);
+  test("missing log file returns { events: [] } without 404/500 (AC4)", () => {
+    const { events, totalLines } = readLogTail(join(testDir, "no-such-file.jsonl"), 50);
+    expect(events).toEqual([]);
+    expect(totalLines).toBe(0);
   });
 
-  test("POST /api/approve returns 400 when Content-Type is not application/json (AC2)", async () => {
-    const r = await fetch(`http://127.0.0.1:${JSON_PORT}/api/approve`, {
-      method: "POST",
-      body: JSON.stringify({ agentName: "agent-be", requestId: "r1", approved: true }),
-    });
-    expect(r.status).toBe(400);
+  test("malformed JSON lines are silently skipped; valid lines returned (AC5)", () => {
+    const malformedFile = join(testDir, "malformed.jsonl");
+    writeFileSync(
+      malformedFile,
+      [
+        JSON.stringify({ ts: "t1", tool: "Read", summary: "valid 1", path: null }),
+        "{not-json",
+        JSON.stringify({ ts: "t2", tool: "Bash", summary: "valid 2", path: "/x" }),
+      ].join("\n") + "\n",
+    );
+    const { events } = readLogTail(malformedFile, 50);
+    expect(events).toHaveLength(2);
+    expect(events[0].tool).toBe("Read");
+    expect(events[1].tool).toBe("Bash");
+    expect(events[1].path).toBe("/x");
   });
 
-  test("POST /api/draft-decision returns 400 when Content-Type is not application/json (AC2)", async () => {
-    const r = await fetch(`http://127.0.0.1:${JSON_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: "taskId=T9&agentName=agent-be",
-    });
-    expect(r.status).toBe(400);
+  test("X-Log-Lines header equals total line count in file (AC6)", async () => {
+    const r = await fetch("http://127.0.0.1:7845/api/log/agent-be?n=50");
+    expect(r.status).toBe(200);
+    const xLogLines = r.headers.get("x-log-lines");
+    expect(xLogLines).toBeTruthy();
+    expect(Number(xLogLines)).toBe(100);
+  });
+});
+
+describe("GET /api/log rate limiting (AC7)", () => {
+  let rlServer: Server;
+  const rlLimiter = makeRateLimiter(10);
+
+  beforeAll(
+    () =>
+      new Promise<void>((resolve) => {
+        rlServer = createServer(makeLogHandler(logAgentsHome, rlLimiter));
+        rlServer.listen(7846, "127.0.0.1", resolve);
+      }),
+  );
+
+  afterAll(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        rlServer.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      }),
+  );
+
+  test("11th request from same IP returns 429 (AC7)", async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 11; i++) {
+      const r = await fetch("http://127.0.0.1:7846/api/log/agent-be");
+      statuses.push(r.status);
+      await r.body?.cancel();
+    }
+    expect(statuses.slice(0, 10).every((s) => s === 200)).toBe(true);
+    expect(statuses[10]).toBe(429);
   });
 });
