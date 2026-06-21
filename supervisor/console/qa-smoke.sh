@@ -57,5 +57,42 @@ fi
 echo "Screenshot: $SCREENSHOT"
 echo ""
 
+# ── T6 AC1: fleet avatar src contains dicebear.com ──
+# Inject a mock agent row by calling renderFleet() directly
+"$BROWSE_BIN" js "renderFleet([{name:'agent-qa',state:'working',task:'T6',sessionStart:new Date(Date.now()-125000).toISOString(),lastTool:'bash',lastSummary:'testing',ended:false}], Date.now()-125000)"
+AVATAR_SRC=$("$BROWSE_BIN" js "var img=document.querySelector('.fleet-avatar');img?img.src:'none'")
+if echo "$AVATAR_SRC" | grep -q "dicebear"; then
+  _ok "T6 AC1: fleet avatar src contains dicebear.com (got: $AVATAR_SRC)"
+else
+  _fail "T6 AC1: fleet avatar src should contain dicebear.com (got: $AVATAR_SRC)"
+fi
+
+# ── T6 AC2: fleet elapsed time contains 'm' or 'h' ──
+ELAPSED=$("$BROWSE_BIN" js "var el=document.querySelector('.fleet-elapsed');el?el.textContent.trim():'none'")
+if echo "$ELAPSED" | grep -qE "[mh]"; then
+  _ok "T6 AC2: fleet elapsed time contains 'm' or 'h' (got: $ELAPSED)"
+else
+  _fail "T6 AC2: fleet elapsed time should contain 'm' or 'h' (got: $ELAPSED)"
+fi
+
+# ── T6 AC4: approval card renders with HIGH badge ──
+"$BROWSE_BIN" js "switchTab('queue')"
+"$BROWSE_BIN" js "window.__injectApproval({id:'qa-appr-1',agent:'agent-qa',command:'rm -rf /prod',risk:'high',action_type:'DELETE',description:'Removes production data'})"
+HIGH_BADGE=$("$BROWSE_BIN" js "document.querySelector('.risk-high')?'true':'false'")
+if [ "$HIGH_BADGE" = "true" ]; then
+  _ok "T6 AC4: approval card renders with HIGH risk badge"
+else
+  _fail "T6 AC4: approval card should have HIGH risk badge"
+fi
+
+# ── T6 AC5: attention card renders with Unblock button ──
+"$BROWSE_BIN" js "window.__injectAttention({id:'qa-attn-1',agent:'agent-qa',task_id:'T6',agent_note:'Need decision on blocker',title:'T6 blocked'})"
+UNBLOCK_BTN=$("$BROWSE_BIN" js "document.querySelector('.btn-unblock')?'true':'false'")
+if [ "$UNBLOCK_BTN" = "true" ]; then
+  _ok "T6 AC5: attention card renders with Unblock button"
+else
+  _fail "T6 AC5: attention card should have Unblock button"
+fi
+
 printf '=== Results: %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

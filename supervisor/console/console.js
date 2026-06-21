@@ -18,6 +18,7 @@ const sseLabel = $('sse-label');
 const attentionBadge = $('attention-badge');
 const approvalBadge = $('approval-badge');
 
+let es = null;
 let sseConnected = false;
 let attentionCount = 0;
 let approvalCount = 0;
@@ -82,16 +83,16 @@ function switchTab(name) {
 
 /* ── Fleet data ── */
 
-async function fetchFleet() {
+async function fetchFleet(baseTs) {
   try {
     const res = await fetch(FLEET_URL);
     if (!res.ok) return;
     const agents = await res.json();
-    renderFleet(agents);
+    renderFleet(agents, baseTs);
   } catch (_) {}
 }
 
-function renderFleet(agents) {
+function renderFleet(agents, baseTs) {
   const loading = $('fleet-loading');
   const table = $('fleet-table');
   const empty = $('fleet-empty');
@@ -114,6 +115,7 @@ function renderFleet(agents) {
   tbody.innerHTML = '';
   for (const a of agents) {
     const tr = document.createElement('tr');
+    const avatarUrl = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(a.name)}&size=32`;
     const taskCell = a.task
       ? `<span class="fleet-task-id">${esc(a.task)}</span>`
       : `<span class="fleet-no-task">no tasks</span>`;
@@ -122,20 +124,36 @@ function renderFleet(agents) {
     const summaryCell = summaryText ? esc(summaryText) : '';
 
     tr.innerHTML = `
-      <td class="fleet-agent">${esc(a.name)}</td>
-      <td>${stateToHtml(a.state)}</td>
-      <td>${taskCell}</td>
-      <td class="fleet-elapsed">—</td>
-      <td class="fleet-tool">${toolCell}</td>
-      <td class="fleet-summary">${summaryCell}</td>
+      <td class="fleet-agent" data-label="Agent">
+        <img class="fleet-avatar" src="${avatarUrl}" width="32" height="32" alt="" loading="lazy">
+        <div class="fleet-avatar-fallback" hidden aria-hidden="true"></div>
+        ${esc(a.name)}
+      </td>
+      <td data-label="State">${stateToHtml(a.state)}</td>
+      <td data-label="Task">${taskCell}</td>
+      <td class="fleet-elapsed" data-label="Elapsed">—</td>
+      <td class="fleet-tool" data-label="Last tool">${toolCell}</td>
+      <td class="fleet-summary" data-label="Activity">${summaryCell}</td>
     `;
 
     tbody.appendChild(tr);
 
+    /* AC1: fallback to grey circle if Dicebear fails to load */
+    const avatarImg = tr.querySelector('.fleet-avatar');
+    if (avatarImg) {
+      avatarImg.onerror = function() {
+        this.style.display = 'none';
+        const fallback = this.nextElementSibling;
+        if (fallback) fallback.removeAttribute('hidden');
+      };
+    }
+
     if (!a.ended && a.sessionStart) {
+      /* AC2: base timestamp from fleet-update ev.ts; update every 10 s */
+      const base = baseTs != null ? baseTs : Date.parse(a.sessionStart);
       const elapsedEl = tr.querySelector('.fleet-elapsed');
-      updateElapsed(elapsedEl, a.sessionStart);
-      const timer = setInterval(() => updateElapsed(elapsedEl, a.sessionStart), 1000);
+      updateElapsed(elapsedEl, base);
+      const timer = setInterval(() => updateElapsed(elapsedEl, base), 10000);
       fleetElapsedTimers.set(a.name, timer);
     }
   }
@@ -219,7 +237,7 @@ function exitCard(card, onRemove) {
   setTimeout(() => {
     card.remove();
     if (onRemove) onRemove();
-  }, 150);
+  }, 300);
 }
 
 /* ── Approval card ── */
@@ -248,7 +266,7 @@ function buildApprovalCard(ev) {
       <div class="card-meta-spacer"></div>
       <span class="approval-risk-label ${riskClass}">${riskLabel}</span>
     </div>
-    <div class="approval-command" role="code">${esc(ev.command || '')}</div>
+    <code class="approval-command">${esc(ev.command || '')}</code>
     <div class="approval-description">${esc(ev.description || '')}</div>
     ${filePillsHtml}
     <div class="approval-footer">
@@ -308,7 +326,6 @@ function buildAttentionCard(ev) {
   article.setAttribute('aria-label', `Blocked task: ${ev.task_id}`);
   article.id = cardId;
 
-  /* AC5: amber failure badge when failure_count >= 2 */
   const failureBadgeHtml = failureCount >= 2
     ? `<span class="failure-badge" aria-label="Blocked ${failureCount} times">⚠ blocked ${failureCount} times</span>`
     : '';
@@ -317,7 +334,6 @@ function buildAttentionCard(ev) {
     `<div class="card-ac-row"><span class="ac-id">${esc(ac.id)}</span><span>${esc(ac.text)}</span></div>`
   ).join('');
 
-  /* AC6: AI draft panel (collapsed by default, toggle reveals it) */
   const draftText = ev.ai_draft || '';
   const draftPanelHtml = draftText ? `
     <div class="ai-draft-panel" id="${draftPanelId}" aria-label="AI draft decision" style="display:none">
@@ -330,12 +346,17 @@ function buildAttentionCard(ev) {
     </div>
   ` : '';
 
+  /* AI draft toggle hidden initially — revealed after Unblock is clicked */
   const draftToggleHtml = draftText ? `
-    <button class="ai-draft-toggle" aria-expanded="false" aria-controls="${draftPanelId}">
+    <button class="ai-draft-toggle" hidden aria-expanded="false" aria-controls="${draftPanelId}">
       AI Draft
       <span class="ai-draft-label">AI</span>
     </button>
   ` : '';
+
+  /* AC5: cap mailbox note at 160 chars */
+  const rawNote = ev.agent_note || '';
+  const noteText = rawNote.length > 160 ? rawNote.slice(0, 160) + '…' : rawNote;
 
   article.innerHTML = `
     <div class="card-meta">
@@ -347,10 +368,10 @@ function buildAttentionCard(ev) {
       <span class="card-timer" aria-live="polite" data-started="${Date.now()}"></span>
     </div>
     <div class="card-task-title">${esc(ev.title || ev.task_id)}</div>
-    ${ev.agent_note ? `<div class="card-agent-note" role="note">${esc(ev.agent_note)}</div>` : ''}
+    ${noteText ? `<div class="card-agent-note" role="note">${esc(noteText)}</div>` : ''}
     ${acsHtml ? `<div class="card-acs"><div class="card-acs-label">Acceptance criteria context</div>${acsHtml}</div>` : ''}
     ${draftPanelHtml}
-    <div class="card-textarea-wrapper">
+    <div class="card-textarea-wrapper" id="textarea-wrapper-${ev.id}" hidden>
       <label class="card-textarea-label" for="${textareaId}">Your decision</label>
       <textarea
         class="card-textarea"
@@ -360,12 +381,12 @@ function buildAttentionCard(ev) {
       ></textarea>
     </div>
     <div class="card-actions">
+      <button class="btn-unblock" aria-label="Unblock task ${esc(ev.task_id)} for agent ${esc(ev.agent)}">Unblock</button>
       ${draftToggleHtml}
-      <button class="btn-send" aria-label="Send decision back to ${esc(ev.agent)} for task ${esc(ev.task_id)}">Send back to agent →</button>
+      <button class="btn-send" hidden aria-label="Send decision back to ${esc(ev.agent)} for task ${esc(ev.task_id)}">Send reply</button>
     </div>
   `;
 
-  /* AC6: AI draft toggle */
   if (draftText) {
     const toggle = article.querySelector('.ai-draft-toggle');
     const panel = article.querySelector(`#${draftPanelId}`);
@@ -374,8 +395,6 @@ function buildAttentionCard(ev) {
       toggle.setAttribute('aria-expanded', String(!expanded));
       panel.style.display = expanded ? 'none' : '';
     });
-
-    /* "Use this draft ↑" copies draft text to textarea */
     article.querySelector('.ai-draft-use-btn').addEventListener('click', () => {
       const textarea = article.querySelector(`#${textareaId}`);
       textarea.value = draftText;
@@ -383,14 +402,31 @@ function buildAttentionCard(ev) {
     });
   }
 
-  /* Send decision */
+  const unblockBtn = article.querySelector('.btn-unblock');
   const sendBtn = article.querySelector('.btn-send');
+  const textareaWrapper = article.querySelector(`#textarea-wrapper-${ev.id}`);
+
+  /* AC5: Unblock click reveals textarea + Send reply */
+  unblockBtn.addEventListener('click', () => {
+    unblockBtn.setAttribute('hidden', '');
+    textareaWrapper.removeAttribute('hidden');
+    sendBtn.removeAttribute('hidden');
+    if (draftText) article.querySelector('.ai-draft-toggle').removeAttribute('hidden');
+    article.querySelector(`#${textareaId}`).focus();
+  });
+
+  /* AC6: Send reply — POST with agentName + taskId; shows Sending… while in-flight */
   sendBtn.addEventListener('click', () => {
     const textarea = article.querySelector(`#${textareaId}`);
     const text = textarea.value.trim();
     if (!text) { textarea.focus(); return; }
+    sendBtn.textContent = 'Sending…';
     sendBtn.disabled = true;
-    sendDecision(ev.id, 'unblock', text).finally(() => {
+    fetch('/api/decision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'unblock', text, agentName: ev.agent, taskId: ev.task_id }),
+    }).catch(() => {}).finally(() => {
       exitCard(article, () => {
         attentionCount--;
         syncState();
@@ -431,7 +467,7 @@ function sendDecision(id, action, text) {
 /* ── SSE ── */
 
 function connect() {
-  const es = new EventSource(SSE_URL);
+  es = new EventSource(SSE_URL);
 
   es.addEventListener('open', () => {
     sseConnected = true;
@@ -473,7 +509,7 @@ function connect() {
     const ev = JSON.parse(e.data);
     if (ev.type === 'fleet-update') {
       fleetLastEventTs = Date.now();
-      if (currentTab === 'fleet') fetchFleet();
+      if (currentTab === 'fleet') fetchFleet(ev.ts);
     }
   });
 
@@ -506,3 +542,29 @@ for (const [name, btn] of Object.entries(tabBtns)) {
 
 switchTab('fleet');
 connect();
+
+/* AC3: poll SSE readyState every 2 s to cycle dot green/amber/red */
+setInterval(() => {
+  if (!es) return;
+  if (es.readyState === EventSource.OPEN) {
+    sseDot.classList.remove('disconnected', 'connecting');
+  } else if (es.readyState === EventSource.CONNECTING) {
+    sseDot.classList.add('connecting');
+    sseDot.classList.remove('disconnected');
+  } else {
+    sseDot.classList.add('disconnected');
+    sseDot.classList.remove('connecting');
+  }
+}, 2000);
+
+/* Test injection helpers — used by qa-smoke.sh via browse js */
+window.__injectApproval = function(ev) {
+  approvalCards.prepend(buildApprovalCard(ev));
+  approvalCount++;
+  syncState();
+};
+window.__injectAttention = function(ev) {
+  attentionCards.prepend(buildAttentionCard(ev));
+  attentionCount++;
+  syncState();
+};
