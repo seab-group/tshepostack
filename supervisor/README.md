@@ -14,10 +14,10 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support) |
 | `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility) |
 | `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces) |
-| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation, fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter) (v7.1) |
+| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation, fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files) (v7.1) |
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
-| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), and rate limiter (v7.1) |
+| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, and startup cleanup (T8 AC1-AC4) (v7.1) |
 | `console/qa-smoke.sh` | QA smoke test for console UI — asserts page title, nav bar, Fleet tab presence, and T6 AC1/AC2/AC4/AC5 (Dicebear avatar src, elapsed time format, HIGH risk badge, Unblock button) via gstack browse (v7.1) |
 
 ---
@@ -180,11 +180,16 @@ The console (or human operator) creates a response file with the same name, appe
 
 Decision files are ephemeral and cleaned up automatically on two schedules to prevent disk accumulation:
 
-**Startup cleanup (AC1/AC2):** When `server.ts` starts, it reads `$SUPERVISOR_DECISIONS_DIR` and deletes any decision files (both request and response `.json` files) that are older than 24 hours. Files newer than 24h are preserved. This handles cases where the console crashes or restarts — stale approvals from previous sessions are garbage-collected, but in-flight approvals created within the last 24h survive the restart.
+**Startup cleanup (T8 AC1–AC4):** When `server.ts` starts, `purgeStaleDecisionFiles(dir)` runs a two-pass sweep of `$SUPERVISOR_DECISIONS_DIR`:
 
-**Post-approval cleanup (AC3/AC4):** When the console writes an approval response file via `POST /api/approve`, it schedules a cleanup timer with `setTimeout(() => unlink(decisionFile), 60_000)`. This gives the bash wrapper approximately 60 seconds to read and process the decision before the file is removed. The unlink error is swallowed silently in case the wrapper already cleaned it up or the file was removed manually.
+- **First pass:** deletes every `*.json` request file whose `mtime` is older than 1 hour, and also deletes the paired `*.decision.json` response file if it exists.
+- **Second pass:** deletes any remaining `*.decision.json` files older than 1 hour (even when the paired request file is still fresh — the decision is no longer needed once written).
 
-**Constraint:** Startup cleanup runs synchronously before `server.listen()` is called, ensuring the server does not bind until the cleanup is complete.
+Files newer than 1 hour are not touched (AC3). If `$SUPERVISOR_DECISIONS_DIR` is not set, empty, or does not exist, the function returns immediately without error (AC4). Per-file stat and unlink errors are caught individually so one unreadable file does not abort the rest of the sweep. Threshold: `Date.now() - mtime.getTime() > 60 * 60 * 1000`.
+
+**Post-approval cleanup:** When the console writes an approval response file via `POST /api/approve`, it schedules a cleanup timer with `setTimeout(() => unlink(decisionFile), 60_000)`. This gives the bash wrapper approximately 60 seconds to read and process the decision before the file is removed. The unlink error is swallowed silently in case the wrapper already cleaned it up or the file was removed manually.
+
+**Constraint (T8 AC5):** Startup cleanup runs synchronously before `server.listen()` is called, ensuring the server does not bind until the cleanup is complete.
 
 ---
 
@@ -1167,9 +1172,24 @@ AC4 (startup cache) is human-verify: `resolveControlDir` is called once in `serv
 
 AC4 (Last-Event-ID replay) and AC6 (30s ping interval) are human-verify: AC4 requires a reconnect with a `Last-Event-ID` header to observe replay messages; AC6 requires waiting 30 seconds and confirming `: ping\n\n` is emitted.
 
+### Startup cleanup tests — `server-utils.ts` (T8 AC1–AC4)
+
+`purgeStaleDecisionFiles` is called directly in unit tests using a temporary `cleanup-decisions/` directory. Each test writes files with controlled `mtime` values (via `utimesSync`) then calls the function and asserts the result:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `deletes request *.json file older than 1 hour (AC1)` | AC1 | File with mtime 2 hours ago is deleted |
+| `also deletes paired *.decision.json when request file is deleted (AC2)` | AC2 | Request + decision pair both deleted when request mtime > 1 hour |
+| `deletes old *.decision.json even when request file is not old (AC2)` | AC2 | Old decision file deleted independently by the second pass |
+| `does NOT delete request file newer than 1 hour (AC3)` | AC3 | Recently written request file survives the sweep |
+| `exits silently when decisionsDir does not exist (AC4)` | AC4 | Non-existent path → no exception thrown |
+| `exits silently when decisionsDir is empty string (AC4)` | AC4 | Empty string → no exception thrown |
+
+AC5 (cleanup runs before `server.listen()`) is human-verify: confirmed by `server.ts` calling `purgeStaleDecisionFiles(...)` at line 402, before `server.listen(PORT, HOSTNAME, ...)` at line 413.
+
 ### Test results
 
-All 48 tests pass (8 bash-wrapper + 40 server tests). Run the full suite with:
+All 79 tests pass (2 bash-wrapper + 77 server tests). Run the full suite with:
 
 ```bash
 bun test supervisor/console/     # runs all tests, exit 0 on pass
