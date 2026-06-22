@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Startup cleanup — purge stale decision files older than 1 hour (v7.1)
+
+When the console restarts after a crash, any bash-wrapper approval requests that had been waiting longer than 1 hour are automatically purged before the HTTP server binds. This prevents stale approval cards from appearing in the Queue tab after a restart when the requesting agent has long since timed out and moved on. The cleanup is synchronous and completes before any client can connect.
+
+#### Added
+- `purgeStaleDecisionFiles(dir)` exported from `server-utils.ts`: two-pass synchronous sweep. First pass: deletes `*.json` request files whose `mtime` is older than 1 hour, plus their paired `*.decision.json` response files. Second pass: deletes standalone `*.decision.json` files older than 1 hour regardless of whether the paired request file is still fresh. Per-file errors are caught individually — one unreadable file does not abort the rest of the sweep (T8 AC1, AC2).
+- Cleanup call added to `server.ts` before `server.listen()` — the HTTP server does not bind until the sweep is complete (T8 AC5).
+- 6 new tests in `server.test.ts` covering T8 AC1 (old request file deleted), AC2 (paired request+decision deleted; standalone old decision deleted by second pass), AC3 (fresh file not deleted), and AC4 (missing dir and empty string both exit silently).
+
 ### Log tail endpoint — GET /api/log/:agent + rate limiting (v7.1)
 
 Click any agent in the Fleet tab to open its log panel — the last 50 events from `live-events.jsonl` load instantly, and new events continue to stream in via the existing SSE connection. The `?n=` parameter lets you request up to 200 events for deeper history. A built-in token-bucket rate limiter (10 req/s per client IP) prevents runaway polling from overwhelming the server.
