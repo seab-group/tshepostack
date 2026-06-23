@@ -27,6 +27,7 @@ import {
   purgeStaleDecisionFiles,
   readPidFile,
   stopProcess,
+  computeStuckSignals,
   type AgentStatus,
   type GitSpawner,
   type ApprovalItem,
@@ -34,6 +35,7 @@ import {
   type PipelineTask,
   type KillFn,
   type IsAliveFn,
+  type StuckAgent,
 } from "./server-utils.ts";
 
 const TEST_PORT = 7843;
