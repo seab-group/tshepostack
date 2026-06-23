@@ -17,7 +17,7 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation (`TASK_ID_RE` supports both `CONS-003` and `T13` styles), fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), `makeLedgerWatchHandler` (broadcasts `pipeline-update` SSE on `.task` file changes), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files), `PipelineTask` type (T13); T11: `readPidFile` (reads PID from a pid file), `stopProcess` (SIGTERM + SIGKILL-after-5s async stop), `defaultIsProcessAlive` (signal-0 liveness check), `defaultKillFn` (signal sender), `KillFn`/`IsAliveFn` injectable types; T14: `computeStuckSignals` (reads each agent's JSONL tail + ledger, returns `StuckAgent[]` with silent/loop/fail_storm signals), `StuckAgent` type (v7.1) |
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
-| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), and fleet.conf-based validAgents (T11-amended AC2/AC3/AC4) (v7.1) |
+| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), and malformed JSONL resilience (T14-amended AC2/AC3/AC4) (v7.1) |
 | `console/qa-smoke.sh` | QA smoke test for console UI — asserts page title, nav bar, Fleet tab presence, T6 AC1/AC2/AC4/AC5 (Dicebear avatar src, elapsed time format, HIGH risk badge, Unblock button), and T13 AC4/AC5 (pipeline endpoint 200, `pipeline-groups` element in HTML, `tasks` key in pipeline JSON) via gstack browse (v7.1) |
 
 ---
@@ -1007,7 +1007,7 @@ data: {"agent":"agent-be","signal":"fail_storm","detail":"3 failed attempts"}
 
 The event fires at most once per 60-second window per agent, even if the endpoint is polled more frequently. Agents that are no longer stuck are removed from `prevStuckSignals` on the next evaluation.
 
-### AC → verification mapping
+### AC → verification mapping (T14)
 
 | AC | Verified by |
 |---|---|
@@ -1019,6 +1019,16 @@ The event fires at most once per 60-second window per agent, even if the endpoin
 | AC6 | Test agent `stuck-missing` has no `live-events.jsonl`; asserts it is absent from stuck array, other agents still present, no 500 |
 | AC7 | Two sequential calls to an isolated edge server; asserts broadcast fires exactly once on the first call, zero times on the second (same signal) |
 | AC8 | Test writes ledger with `status=needs_human`, `failure_count=3`; asserts agent absent from stuck list |
+
+### AC → verification mapping (T14-amended)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | PR review — `grep 'JSON.parse' supervisor/console/server-utils.ts` confirms all JSONL-line parsing in `readLogTail` and `computeStuckSignals` is wrapped in per-line try/catch returning null | human-verify |
+| AC2 | `describe("stuck detection malformed JSONL")` — 20-line fixture with malformed lines at positions 4, 11, 17; asserts `signal=loop` (loop detected from 17 valid Bash events) | done_check |
+| AC3 | Same describe block — `GET /api/stuck` returns HTTP 200 even when JSONL contains malformed lines; no 500 | done_check |
+| AC4 | Same describe block — all-malformed JSONL file (`}{broken` × 5); asserts `{ stuck: [] }` HTTP 200 | done_check |
+| AC5 | PR review — grep across `server.ts` and `server-utils.ts` confirms no bare `JSON.parse` call on JSONL line content (all are on full-file `readFileSync` results or request body buffers, which use separate error handling) | human-verify |
 
 ---
 
@@ -1571,9 +1581,22 @@ T14 adds 8 new tests in one `describe` block. Two isolated HTTP servers are crea
 | `AC7: edge-triggered SSE — broadcasts once for new signal, suppresses same signal on re-evaluation` | AC7 | First call: exactly 1 broadcast for `stuck-edge`, `event: stuck`, payload has `agent="stuck-edge"` and `signal="silent"`; second call (same signal): 0 broadcasts |
 | `AC8: agent with needs_human status not reported as stuck` | AC8 | `stuck-suppressed` absent from stuck array despite `failure_count=3` |
 
+### Malformed JSONL resilience tests — `server.test.ts` (T14-amended AC2–AC4)
+
+T14-amended adds a `describe("stuck detection malformed JSONL")` block with 3 tests across two isolated HTTP servers:
+
+- **Port 7853** (`malformedMixedServer`): serves a 20-line `live-events.jsonl` with malformed lines at positions 4, 11, and 17 (0-indexed). The remaining 17 lines are valid `Bash` events with recent timestamps.
+- **Port 7854** (`malformedAllServer`): serves a 5-line `live-events.jsonl` where every line is `}{broken`.
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `AC2: 20-line file with 3 malformed lines — signals computed from 17 valid lines` | AC2 | `GET /api/stuck` returns HTTP 200; `malformed-mixed` agent entry present with `signal="loop"` (17 valid Bash events → last 5 identical tools → loop detected) |
+| `AC3: malformed JSONL lines do not cause a 500 — endpoint always returns 200` | AC3 | `GET /api/stuck` against the mixed-malformed server returns HTTP 200, not 500 |
+| `AC4: all-malformed JSONL file → { stuck: [] } with HTTP 200` | AC4 | `GET /api/stuck` against the all-malformed server returns HTTP 200; `body.stuck` has length 0 (no valid events to compute signals from) |
+
 ### Test results
 
-All 123 tests pass (2 bash-wrapper + 121 server tests). Run the full suite with:
+All 126 tests pass (2 bash-wrapper + 124 server tests). Run the full suite with:
 
 ```bash
 bun test supervisor/console/     # runs all tests, exit 0 on pass
