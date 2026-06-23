@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Stuck detection — malformed JSONL no longer crashes GET /api/stuck (T14-amended)
+
+A single corrupted line in an agent's `live-events.jsonl` (caused by a mid-write SIGTERM, a disk error, or any partial write) no longer returns a 500 from `GET /api/stuck`. Every `JSON.parse` call on individual JSONL lines in the stuck detection path is now wrapped in a per-line try/catch that returns null and filters the bad line out. The remaining valid lines are processed normally. If every line in the file is malformed, the endpoint returns `{ stuck: [] }` with HTTP 200. No stuck signals are reported for data that cannot be read; signals based on other agents are unaffected.
+
+#### Fixed
+- `computeStuckSignals` uses `.map(line => { try { return JSON.parse(line) } catch { return null } }).filter(Boolean)` on each JSONL line. A malformed line is silently discarded; it does not throw, does not truncate the result set, and does not cause the endpoint to return 500 (T14-amended AC1/AC2/AC3).
+- An all-malformed `live-events.jsonl` file yields `{ stuck: [] }` rather than a crash or a false signal (T14-amended AC4).
+- Audit of all other `JSON.parse` calls in `server.ts` and `server-utils.ts` confirms no bare JSONL-line parse exists outside this path (T14-amended AC5).
+
+#### Added
+- 3 new tests in `describe("stuck detection malformed JSONL")` in `server.test.ts` across two isolated servers (ports 7853/7854): 20-line file with 3 malformed lines yields correct signals from 17 valid lines (AC2), endpoint always returns 200 on malformed input (AC3), all-malformed file yields `{ stuck: [] }` (AC4) (126 total: 2 bash-wrapper + 124 server).
+
 ### Fleet control — tighten agent validation to controlDir fleet.conf (T11-amended)
 
 Agent name validation for all fleet control endpoints now reads the fleet registry from the workspace's control repo rather than the local `supervisor/fleet.conf`. If no registry is found at startup, all agent names are immediately rejected — there is no fallback list. When the active workspace changes, the valid-agent set is rebuilt from the new workspace's registry; switching to a workspace with no registry empties the set rather than retaining the previous one.
