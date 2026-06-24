@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Cost tracker cache — dedicated verify describe blocks lock in the cache contract (T19-amended)
+
+Four new describe blocks in `server.test.ts` tighten the test coverage on T19's cache implementation. Each block isolates one cache behavior — the `cachedAt` field, the 30-second TTL, workspace-switch invalidation, and the `?since=` cache bypass — so a future regression in any of these four invariants fails one clearly-named test rather than a general aggregation test.
+
+#### Added
+- `describe("cost cache cachedAt")` — asserts `GET /api/cost` response carries `cachedAt` as a valid ISO 8601 string (round-trips through `new Date().toISOString()`) (T19-amended AC1). Port 7890 (shared cost server).
+- `describe("cost cache TTL")` — uses an injectable `computeFn` spy; calls `GET /api/cost` twice within 1 second; asserts spy invoked exactly once (cache hit on the second call) (T19-amended AC2). Port 7894.
+- `describe("cost cache workspace switch")` — pre-populates cache for `sw-ws1` with a 60s TTL; fires `POST /api/workspaces/sw-ws2/activate`; asserts `cache.has("sw-ws1")` is false (T19-amended AC3). Port 7895.
+- `describe("cost cache bypass since")` — calls `GET /api/cost?since=…` twice; asserts spy called twice and `localCache.size === 0` (since path never writes to cache) (T19-amended AC4/AC5). Port 7896.
+- Total test suite: 148 (2 bash-wrapper + 146 server).
+
 ### Cost tracker — see real token usage and cost per agent in the Cost tab (T19)
 
 The Cost tab now shows real data. Each agent writes token usage to its `live-events.jsonl` as it runs; `GET /api/cost` reads those files and returns per-agent and grand-total `tokens_in`, `tokens_out`, and `cost_usd`. A 30-second workspace-keyed cache keeps repeated tab switches from re-scanning all JSONL files. Switching workspaces evicts the outgoing workspace's cache entry immediately. A `?since=ISO` query returns a filtered, always-fresh response for time-windowed cost views.
