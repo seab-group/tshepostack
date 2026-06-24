@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### CONTROL_DIR back-compat invariant locked in with tests (T17a)
+
+Any script that sets `CONTROL_DIR` and launches the console server now has four tests watching its back. The invariant — that `bootstrapWorkspace` auto-registers `CONTROL_DIR` on first boot and appends without clobbering the active workspace when a registry already exists — is tested in isolation with temp dirs, so a future refactor that silently breaks back-compat will fail CI immediately.
+
+#### Added
+- `describe("CONTROL_DIR back-compat: first boot (AC1)")` — 1 test on port 7885: no `workspaces.json` present; `bootstrapWorkspace` creates it; `GET /api/workspaces` returns exactly one workspace whose `id` is a valid UUID4 and whose `id` equals `activeId` (T17a AC1).
+- `describe("CONTROL_DIR back-compat: existing registry (AC2)")` — 1 test on port 7886: pre-existing registry with one workspace and a pinned `activeId`; `bootstrapWorkspace` appends without touching `activeId`; `GET /api/workspaces` returns 2 workspaces, original `activeId` preserved (T17a AC2).
+- `describe("CONTROL_DIR back-compat: validAgents (AC3)")` — 1 pure-unit test: `parseFleetConf` on a 3-line `fleet.conf` produces a Set of size 3 with the expected agent names (T17a AC3).
+- `describe("CONTROL_DIR back-compat: missing fleet.conf (AC4)")` — 1 pure-unit test: absent `fleet.conf` → `readFileSync` throws → catch path yields empty Set, no exception propagates (T17a AC4).
+- 150 total tests (2 bash-wrapper + 148 server).
+
+### Workspace registry — register and switch between ECOBA engagements without restart (T17)
+
+Directors who supervise multiple ECOBA engagements on one machine can now register each workspace and switch the active one from the console without restarting the server. The registry at `~/.gstack-console/workspaces.json` persists workspace names, `controlDir` paths, and an `activeId`. When the active workspace changes, `validAgents` is reloaded from the new workspace's `fleet.conf` server-side before the `workspace-switch` SSE event reaches any connected browser tab — no stale state window.
+
+#### Added
+- `GET /api/workspaces` — reads `~/.gstack-console/workspaces.json`; returns `{ workspaces: [], activeId: null }` if the file is absent (T17 AC1).
+- `POST /api/workspaces` — validates `controlDir` is absolute and `controlDir/ledger/` exists; appends a new UUID-id workspace and returns it (T17 AC2).
+- `DELETE /api/workspaces/:id` — removes workspace; shifts `activeId` to the first remaining entry or `null` if the registry empties (T17 AC3).
+- `POST /api/workspaces/:id/activate` — sets `activeId`, reloads `validAgents` from the new workspace's fleet.conf, broadcasts `workspace-switch` SSE event `{ workspaceId, name, controlDir }`, returns `{ ok: true }` (T17 AC4/AC7).
+- `bootstrapWorkspace(controlDir, path)` in `server-utils.ts` — on startup, auto-creates the registry with `CONTROL_DIR` as the sole active workspace if the file is absent (AC5); appends without changing `activeId` if the file exists but lacks that `controlDir` (AC6).
+- `Workspace` and `WorkspaceRegistry` types, `defaultWorkspacesPath`, `readWorkspaceRegistry`, `writeWorkspaceRegistry` exported from `server-utils.ts`.
+- 11 new tests on port 7880; 146 total tests (2 bash-wrapper + 144 server).
+
 ### v1 test suite — gap tests for stale PID, loop threshold, signal precedence, n=0 (T16-amended)
 
 Four boundary and multi-signal test cases that were not covered by prior suites are now locked in. The loop detection threshold boundary (4 events vs. the 5-event threshold), the `fail_storm`-over-`loop` precedence rule, the stale-PID idempotent stop path with real OS liveness checks, and the `?n=0` lower-bound rejection in the log endpoint are all now exercised in their own isolated describe blocks.

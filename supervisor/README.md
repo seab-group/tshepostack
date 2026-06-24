@@ -9,15 +9,15 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `fleet.conf` | Declare all agents in one place |
 | `install.sh` | Register an agent as a launchd (macOS) or systemd (Linux) service |
 | `wake-listen.ts` | Supabase Realtime subscriber — wakes idle agents in <1s cross-machine |
-| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE; T11: fleet control routes — POST /api/fleet/stop, /restart, /pause, /resume; T11-amended: shim removed — `validAgents` built solely from `controlDir/fleet.conf` via `rebuildValidAgents()`, called at startup and on workspace switch; T15-amended: `POST /api/fleet/restart` calls `kernel/task fail {taskId} --agent {agentName} --role human` via `spawnSync` before stopping and relaunching — returns 500 if fail exits non-zero, skips if agent holds no claimed task; T5: `handleDraftDecision` rewritten — Anthropic SDK dependency removed, endpoint now appends a timestamped human note block to the agent's mailbox file and calls `gitCommitAndPush`) |
+| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE; T11: fleet control routes — POST /api/fleet/stop, /restart, /pause, /resume; T11-amended: shim removed — `validAgents` built solely from `controlDir/fleet.conf` via `rebuildValidAgents()`, called at startup and on workspace switch; T5: `handleDraftDecision` rewritten — Anthropic SDK dependency removed, endpoint now appends a timestamped human note block to the agent's mailbox file and calls `gitCommitAndPush`; T17: workspace registry endpoints — GET/POST `/api/workspaces`, DELETE `/api/workspaces/:id`, POST `/api/workspaces/:id/activate` (reloads `validAgents` from new workspace fleet.conf before SSE broadcast); startup bootstrap: `bootstrapWorkspace(controlDir, workspacesPath)` auto-registers `CONTROL_DIR` as a workspace if absent or not yet listed (AC5/AC6)) |
 | `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved) |
 | `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support, Pipeline tab panel with domain filter chips and spec panel) |
 | `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility, Pipeline tab with collapsible status groups, domain filter chips persisted in localStorage, spec panel on card click, `pipeline-update` SSE listener; T13-amended: `pipelineBootstrapped` one-shot guard on tab activate, `fetchPipeline()` called on SSE reconnect, all SSE listeners fixed from `currentEs` → `es`) |
 | `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces, pipeline group/card/filter/spec-panel component styles) |
-| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation (`TASK_ID_RE` supports both `CONS-003` and `T13` styles), fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), `makeLedgerWatchHandler` (broadcasts `pipeline-update` SSE on `.task` file changes), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files), `PipelineTask` type (T13); T11: `readPidFile` (reads PID from a pid file), `stopProcess` (SIGTERM + SIGKILL-after-5s async stop), `defaultIsProcessAlive` (signal-0 liveness check), `defaultKillFn` (signal sender), `KillFn`/`IsAliveFn` injectable types; T14: `computeStuckSignals` (reads each agent's JSONL tail + ledger, returns `StuckAgent[]` with silent/loop/fail_storm signals), `StuckAgent` type; T9: `readAndValidatePostBody` (validates Content-Type header + JSON body for all POST handlers; returns `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure) (v7.1) |
+| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation (`TASK_ID_RE` supports both `CONS-003` and `T13` styles), fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), `makeLedgerWatchHandler` (broadcasts `pipeline-update` SSE on `.task` file changes), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files), `PipelineTask` type (T13); T11: `readPidFile` (reads PID from a pid file), `stopProcess` (SIGTERM + SIGKILL-after-5s async stop), `defaultIsProcessAlive` (signal-0 liveness check), `defaultKillFn` (signal sender), `KillFn`/`IsAliveFn` injectable types; T14: `computeStuckSignals` (reads each agent's JSONL tail + ledger, returns `StuckAgent[]` with silent/loop/fail_storm signals), `StuckAgent` type; T9: `readAndValidatePostBody` (validates Content-Type header + JSON body for all POST handlers; returns `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure); T17: `Workspace`/`WorkspaceRegistry` types, `defaultWorkspacesPath` (`~/.gstack-console/workspaces.json`), `readWorkspaceRegistry` (reads file; returns empty registry on missing file), `writeWorkspaceRegistry` (mkdir-p + write), `bootstrapWorkspace` (idempotent: no-op if controlDir already listed; creates registry with controlDir as active workspace if absent, appends if registry exists but lacks that path) (v7.1) |
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
-| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), and T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4) (135 total: 2 bash-wrapper + 133 server) |
+| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4), workspace registry (T17 AC1-AC7: GET/POST /api/workspaces, DELETE /api/workspaces/:id, POST /api/workspaces/:id/activate, bootstrapWorkspace AC5/AC6, validAgents reload AC7), and T17a back-compat (CONTROL_DIR first boot AC1, existing registry AC2, validAgents from fleet.conf AC3, missing fleet.conf AC4) (150 total: 2 bash-wrapper + 148 server) |
 | `console/qa-smoke.sh` | QA smoke test for console UI — asserts page title, nav bar, Fleet tab presence, T6 AC1/AC2/AC4/AC5 (Dicebear avatar src, elapsed time format, HIGH risk badge, Unblock button), and T13 AC4/AC5 (pipeline endpoint 200, `pipeline-groups` element in HTML, `tasks` key in pipeline JSON) via gstack browse (v7.1) |
 
 ---
@@ -458,7 +458,7 @@ The regex rejects:
 - Starts with a digit: `3CONS` ✗
 
 **Fleet.conf parsing (AC6 / T11-amended AC1–AC3):**
-At startup, `server.ts` calls `rebuildValidAgents(controlDir)`, which reads `controlDir/fleet.conf` and builds `validAgents` — a `Set<string>` of all agent names listed in the file. All agents listed in `fleet.conf` are immediately valid. If `controlDir/fleet.conf` is absent or unreadable, `validAgents` is set to an empty `Set` and a warning is written to stderr; the server continues (T11-amended AC2). When the workspace changes (via `POST /api/workspace-switch`), `rebuildValidAgents` is called again with the new `controlDir`; if the new `fleet.conf` is absent, `validAgents` is emptied rather than kept from the previous workspace (T11-amended AC3). The Set is queried on every request to `/api/mailbox/:agentName`.
+At startup, `server.ts` calls `rebuildValidAgents(controlDir)`, which reads `controlDir/fleet.conf` and builds `validAgents` — a `Set<string>` of all agent names listed in the file. All agents listed in `fleet.conf` are immediately valid. If `controlDir/fleet.conf` is absent or unreadable, `validAgents` is set to an empty `Set` and a warning is written to stderr; the server continues (T11-amended AC2). When the workspace changes (via `POST /api/workspaces/:id/activate`, T17), `rebuildValidAgents` is called with the new workspace's `controlDir` before the `workspace-switch` SSE event is broadcast; if the new `fleet.conf` is absent, `validAgents` is emptied rather than kept from the previous workspace (T11-amended AC3, T17 AC7). The Set is queried on every request to `/api/mailbox/:agentName`.
 
 **POST body validation — `readAndValidatePostBody` (T9 AC1/AC2):**
 All POST endpoints (`/api/mailbox/:agentName`, `/api/approve`, `/api/draft-decision`) call `readAndValidatePostBody(req)` before any filesystem or git operation. The function checks the `Content-Type` header (must include `application/json`) and parses the request body as JSON. A wrong content type or unparseable body produces an immediate HTTP 400 response. The function returns a discriminated union: `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure. Prior to T9, each handler read raw body bytes and called `JSON.parse` independently, and a missing `Content-Type` header was silently accepted.
@@ -1312,6 +1312,121 @@ This branch also includes a one-line fix to the `GET /api/stuck` handler in `ser
 
 ---
 
+## Workspace registry (T17)
+
+T17 lets directors register multiple ECOBA engagements (workspaces) on one machine and switch between them without restarting the console server. A workspace is a control repo checked out at a specific path; the registry lives at `~/.gstack-console/workspaces.json`.
+
+### Registry file format
+
+```json
+{
+  "workspaces": [
+    { "id": "w1", "name": "Project Alpha", "controlDir": "/Users/u/alpha-control", "createdAt": "2026-01-01T00:00:00.000Z" }
+  ],
+  "activeId": "w1"
+}
+```
+
+`id` is a `crypto.randomUUID()` string. If the file does not exist, the registry is treated as `{ workspaces: [], activeId: null }`.
+
+### Startup bootstrap (AC5/AC6)
+
+On server startup, if `CONTROL_DIR` is set, `bootstrapWorkspace(controlDir, workspacesPath)` runs before any request is handled:
+
+- **AC5:** If `workspaces.json` does not exist, the file is created with one workspace entry using `CONTROL_DIR` as `controlDir` and `basename(controlDir)` as the name; that workspace is set as `activeId`.
+- **AC6:** If `workspaces.json` exists but no entry has a matching `controlDir`, the new workspace is appended. The existing `activeId` is preserved.
+- If the file already contains an entry for that `controlDir`, `bootstrapWorkspace` is a no-op.
+
+### GET /api/workspaces (AC1)
+
+Returns the full registry:
+
+```
+GET /api/workspaces
+→ 200 { workspaces: Workspace[], activeId: string | null }
+```
+
+If `workspaces.json` is absent or unreadable, returns `{ workspaces: [], activeId: null }` rather than 404 or 500.
+
+### POST /api/workspaces (AC2)
+
+Adds a new workspace entry:
+
+```
+POST /api/workspaces
+Content-Type: application/json
+{ "name": "Project Beta", "controlDir": "/abs/path/to/beta-control" }
+
+→ 200 { workspace: Workspace }
+→ 400 { error: "controlDir must be an absolute path" }          (relative path)
+→ 400 { error: "controlDir/ledger not found" }                  (no ledger/ dir)
+```
+
+Validation order: `readAndValidatePostBody` (Content-Type + JSON), then `path.isAbsolute(controlDir)`, then `existsSync(join(controlDir, 'ledger'))`. A UUID `id` and ISO `createdAt` are generated server-side; the caller provides only `name` and `controlDir`.
+
+### DELETE /api/workspaces/:id (AC3)
+
+Removes a workspace from the registry:
+
+```
+DELETE /api/workspaces/:id
+→ 204 (no body)
+→ 404 { error: "not found" }
+```
+
+If the deleted workspace was `activeId`, `activeId` shifts to the first remaining workspace, or `null` if the registry is now empty.
+
+### POST /api/workspaces/:id/activate (AC4/AC7)
+
+Switches the active workspace and reloads `validAgents`:
+
+```
+POST /api/workspaces/:id/activate
+→ 200 { ok: true }
+→ 404 { error: "not found" }
+```
+
+Before broadcasting the `workspace-switch` SSE event, `rebuildValidAgents(ws.controlDir)` runs server-side so the new `validAgents` Set is in effect for all subsequent requests (AC7). The SSE payload is:
+
+```
+event: workspace-switch
+data: { "workspaceId": "<id>", "name": "<name>", "controlDir": "<path>" }
+```
+
+### AC → verification mapping (T17)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `describe("GET /api/workspaces (AC1)")` — missing file → empty registry; populated file → correct body | done_check |
+| AC2 | `describe("POST /api/workspaces (AC2)")` — relative path → 400; missing ledger → 400; valid controlDir → workspace appended and returned | done_check |
+| AC3 | `describe("DELETE /api/workspaces/:id (AC3)")` — delete active → activeId shifts to next; delete last → activeId null | done_check |
+| AC4 | `describe("POST /api/workspaces/:id/activate (AC4)")` — sets activeId, broadcasts workspace-switch SSE frame with correct payload, returns `{ ok: true }` | done_check |
+| AC5 | `describe("bootstrapWorkspace AC5/AC6")` — absent registry: created with CONTROL_DIR entry as activeId | done_check |
+| AC6 | `describe("bootstrapWorkspace AC5/AC6")` — existing registry without that controlDir: new entry appended, original activeId preserved | done_check |
+| AC7 | `describe("POST /api/workspaces/:id/activate validAgents reload (AC7)")` — activate call triggers `rebuildValidAgentsFn` with the activated workspace's `controlDir` | done_check |
+
+### CONTROL_DIR back-compat invariant (T17a)
+
+T17a locks in the invariant that `CONTROL_DIR` env causes `bootstrapWorkspace` to auto-register the path on startup — preserving backward compatibility with all existing `run-agent.sh` and CI scripts that set this variable without creating a `workspaces.json` first.
+
+The invariant has two parts:
+
+- **First boot (AC1):** If `CONTROL_DIR` is set and `workspaces.json` does not yet exist, `bootstrapWorkspace` creates the file with one entry using `CONTROL_DIR` as `controlDir`. That workspace's UUID is written as `activeId`. `GET /api/workspaces` returns exactly this workspace with a valid UUID4 `id`.
+- **Existing registry (AC2):** If `workspaces.json` already exists (one or more workspaces with an established `activeId`), `bootstrapWorkspace` appends the new `CONTROL_DIR` path as a second workspace without changing `activeId`. The pre-existing active workspace remains active.
+
+`parseFleetConf` is also tested standalone (AC3/AC4) to confirm that the `validAgents` Set it produces is correct when `fleet.conf` is present, and is an empty `Set` (no crash) when the file is absent.
+
+### AC → verification mapping (T17a)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `describe("CONTROL_DIR back-compat: first boot (AC1)")` — no `workspaces.json`; `bootstrapWorkspace` called; GET returns 1 workspace with UUID `activeId` matching the workspace id | done_check |
+| AC2 | `describe("CONTROL_DIR back-compat: existing registry (AC2)")` — pre-existing registry with `existingActiveId`; `bootstrapWorkspace` appends new workspace; GET returns 2 workspaces; `activeId` still `existingActiveId` | done_check |
+| AC3 | `describe("CONTROL_DIR back-compat: validAgents (AC3)")` — `parseFleetConf` on a 3-line `fleet.conf`; result Set has size 3 with expected agent names | done_check |
+| AC4 | `describe("CONTROL_DIR back-compat: missing fleet.conf (AC4)")` — `parseFleetConf` call wrapped in try/catch on absent file; `validAgents` is empty Set, no exception propagates | done_check |
+
+---
+
 ## Console UI — design system (v7.1)
 
 The console frontend uses a dark-theme design system coordinated with `docs/DESIGN.md`.
@@ -1939,9 +2054,37 @@ BUG-2 adds one static-analysis test that prevents the `agentList` ReferenceError
 |---|---|
 | `server.ts passes validAgents (not agentList) to computeStuckSignals` | Reads `server.ts` source with `readFileSync` and asserts `/computeStuckSignals\s*\(\s*agentList\b/` does not match. Any merge conflict that reintroduces the wrong variable name fails this test immediately, before the server even boots. |
 
+### Workspace registry tests — server.test.ts (T17 AC1–AC7)
+
+T17 adds 7 describe blocks (11 tests total) behind port 7880. All blocks use a `makeWorkspacesHandler` factory that mirrors the server.ts workspace endpoints, with injectable `workspacesPath`, `rebuildValidAgentsFn`, `broadcastFn`, and `existsFn`.
+
+| Describe block | AC | Tests | What they assert |
+|---|---|---|---|
+| `GET /api/workspaces (AC1)` | AC1 | 2 | Missing file → `{ workspaces: [], activeId: null }` 200; populated file → registry body returned |
+| `POST /api/workspaces (AC2)` | AC2 | 3 | Relative controlDir → 400; absent `ledger/` dir → 400; valid absolute path → workspace appended and returned |
+| `DELETE /api/workspaces/:id (AC3)` | AC3 | 2 | Delete active workspace → activeId shifts to next; delete last → activeId null |
+| `POST /api/workspaces/:id/activate (AC4)` | AC4 | 1 | Sets activeId, broadcasts `workspace-switch` SSE frame with `workspaceId/name/controlDir`, returns `{ ok: true }` |
+| `bootstrapWorkspace AC5/AC6` | AC5/AC6 | 2 | Absent registry → created with CONTROL_DIR as activeId; existing registry without that path → appended, original activeId preserved |
+| `POST /api/workspaces/:id/activate validAgents reload (AC7)` | AC7 | 1 | `rebuildValidAgentsFn` called with the activated workspace's `controlDir` |
+
+Port 7880 is used for the HTTP server tests; AC5 and AC6 are pure unit tests that call `bootstrapWorkspace` directly with temp file paths.
+
+### CONTROL_DIR back-compat tests — server.test.ts (T17a AC1–AC4)
+
+T17a adds 4 describe blocks (4 tests total) after the T17 workspace registry suite. The blocks use the same `bootstrapWorkspace`, `makeWorkspacesHandler`, `writeWorkspaceRegistry`, and `parseFleetConf` imports as the T17 tests.
+
+| Describe block | AC | Tests | Port | What they assert |
+|---|---|---|---|---|
+| `CONTROL_DIR back-compat: first boot (AC1)` | AC1 | 1 | 7885 | `bootstrapWorkspace` on absent `workspaces.json` → GET returns 1 workspace; `activeId` equals that workspace's UUID4 `id`; `controlDir` matches the tmp dir |
+| `CONTROL_DIR back-compat: existing registry (AC2)` | AC2 | 1 | 7886 | Pre-existing registry with 1 workspace and `existingActiveId`; `bootstrapWorkspace` appends new path → GET returns 2 workspaces; `activeId` still `existingActiveId`; new workspace present but not active |
+| `CONTROL_DIR back-compat: validAgents (AC3)` | AC3 | 1 | — | `parseFleetConf` on a 3-line `fleet.conf` → Set size 3; `has("agent-be")`, `has("agent-qa")`, `has("agent-fe")` all true |
+| `CONTROL_DIR back-compat: missing fleet.conf (AC4)` | AC4 | 1 | — | `readFileSync` on absent path throws; catch path sets `validAgents = new Set()`; size 0, no exception propagates |
+
+AC3 and AC4 are pure unit tests (no HTTP server). All temp dirs use `mkdtempSync` and are cleaned up in `afterAll`.
+
 ### Test results
 
-All 135 tests pass (2 bash-wrapper + 133 server tests). Run the full suite with:
+All 150 tests pass (2 bash-wrapper + 148 server tests). Run the full suite with:
 
 ```bash
 bun test supervisor/console/     # runs all tests, exit 0 on pass
