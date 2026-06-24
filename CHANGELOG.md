@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Trust ledger — auto-approve or block recurring commands without console prompts (T21)
+
+Directors no longer need to click Approve every time an agent runs `bun test` or `git status`. The trust ledger lets you register a pattern once — the bash wrapper checks `~/.gstack-console/trust.json` using `python3` before writing any decision request file, so matching commands execute (or are blocked) immediately. Three new REST endpoints manage the ledger from the console or any HTTP client.
+
+#### Added
+- `GET /api/trust` in `server.ts` — returns `{ rules: TrustRule[] }` from `~/.gstack-console/trust.json`; missing file returns `{ rules: [] }`, never 404 (T21 AC1).
+- `POST /api/trust` in `server.ts` — validates `agent` against `validAgents`, `pattern` as a non-empty string, `action` as `"approve"` or `"reject"`; appends the new rule via read-modify-write and returns `{ rule: TrustRule }` (T21 AC2).
+- `DELETE /api/trust/:id` in `server.ts` — removes the matching rule and responds 204; returns 404 if the id is not found (T21 AC3).
+- Trust check in `bin/bash` — before writing a decision request file, reads `trust.json` with `python3 -c '...'` and checks for a matching `agent` + substring `pattern`; `approve` → `exec "$REAL_BASH"` (no request file); `reject` → `exit 1`; missing file or malformed JSON → falls through to normal decision flow (T21 AC4/AC5/AC6).
+- `TrustRule` type `{ id, agent, pattern, action, createdAt }` and `TrustLedger` type `{ rules: TrustRule[] }` exported from `server-utils.ts`.
+- `readTrustLedger(path)` and `writeTrustLedger(path, ledger)` in `server-utils.ts` — read returns `{ rules: [] }` on any error; write does mkdir-p + `JSON.stringify` with 2-space indent.
+- `defaultTrustPath()` in `server-utils.ts` — resolves to `~/.gstack-console/trust.json`.
+- 8 new tests in `server.test.ts` across 3 describe blocks covering AC1–AC3 — `makeTrustHandler` factory, `T21_PORT = 7890`. 4 new bash subtests in `bash-wrapper.test.sh` covering AC4/AC5/AC6a/AC6b. Total test suite: 152 (2 bash-wrapper + 150 server).
+
 ### Cost tracker — see real token usage and cost per agent in the Cost tab (T19)
 
 The Cost tab now shows real data. Each agent writes token usage to its `live-events.jsonl` as it runs; `GET /api/cost` reads those files and returns per-agent and grand-total `tokens_in`, `tokens_out`, and `cost_usd`. A 30-second workspace-keyed cache keeps repeated tab switches from re-scanning all JSONL files. Switching workspaces evicts the outgoing workspace's cache entry immediately. A `?since=ISO` query returns a filtered, always-fresh response for time-windowed cost views.

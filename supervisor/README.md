@@ -9,15 +9,15 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `fleet.conf` | Declare all agents in one place |
 | `install.sh` | Register an agent as a launchd (macOS) or systemd (Linux) service |
 | `wake-listen.ts` | Supabase Realtime subscriber — wakes idle agents in <1s cross-machine |
-| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE; T11: fleet control routes — POST /api/fleet/stop, /restart, /pause, /resume; T11-amended: shim removed — `validAgents` built solely from `controlDir/fleet.conf` via `rebuildValidAgents()`, called at startup and on workspace switch; T5: `handleDraftDecision` rewritten — Anthropic SDK dependency removed, endpoint now appends a timestamped human note block to the agent's mailbox file and calls `gitCommitAndPush`; T17: workspace registry endpoints — GET/POST `/api/workspaces`, DELETE `/api/workspaces/:id`, POST `/api/workspaces/:id/activate` (reloads `validAgents` from new workspace fleet.conf before SSE broadcast); startup bootstrap: `bootstrapWorkspace(controlDir, workspacesPath)` auto-registers `CONTROL_DIR` as a workspace if absent or not yet listed (AC5/AC6); T19: `GET /api/cost` — aggregates `tokens_in`, `tokens_out`, `cost_usd` per agent from `~/agents/<agent>/logs/live-events.jsonl`; 30s workspace-keyed in-memory cache (`costCache: Map<wsId, {data, expiresAt}>`); `?since=ISO` bypasses cache and computes fresh; `POST /api/workspaces/:id/activate` calls `costCache.delete(reg.activeId)` before switching) |
+| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE; T11: fleet control routes — POST /api/fleet/stop, /restart, /pause, /resume; T11-amended: shim removed — `validAgents` built solely from `controlDir/fleet.conf` via `rebuildValidAgents()`, called at startup and on workspace switch; T5: `handleDraftDecision` rewritten — Anthropic SDK dependency removed, endpoint now appends a timestamped human note block to the agent's mailbox file and calls `gitCommitAndPush`; T17: workspace registry endpoints — GET/POST `/api/workspaces`, DELETE `/api/workspaces/:id`, POST `/api/workspaces/:id/activate` (reloads `validAgents` from new workspace fleet.conf before SSE broadcast); startup bootstrap: `bootstrapWorkspace(controlDir, workspacesPath)` auto-registers `CONTROL_DIR` as a workspace if absent or not yet listed (AC5/AC6); T19: `GET /api/cost` — aggregates `tokens_in`, `tokens_out`, `cost_usd` per agent from `~/agents/<agent>/logs/live-events.jsonl`; 30s workspace-keyed in-memory cache (`costCache: Map<wsId, {data, expiresAt}>`); `?since=ISO` bypasses cache and computes fresh; `POST /api/workspaces/:id/activate` calls `costCache.delete(reg.activeId)` before switching; T21: trust ledger endpoints — GET `/api/trust` (returns rules or `{ rules: [] }` when file absent), POST `/api/trust` (validates agent against `validAgents`, pattern as non-empty string, action as `approve`|`reject`; appends rule via read-modify-write), DELETE `/api/trust/:id` (removes rule by id; 204 on success, 404 if not found)) |
 | `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved) |
 | `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support, Pipeline tab panel with domain filter chips and spec panel; T18: workspace switcher `<details>/<summary>` pill between the page subtitle and SSE dot — dropdown lists registered workspaces with active checkmark; inline "+ Add workspace" form with Name + Control directory fields and error slot) |
 | `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility, Pipeline tab with collapsible status groups, domain filter chips persisted in localStorage, spec panel on card click, `pipeline-update` SSE listener; T13-amended: `pipelineBootstrapped` one-shot guard on tab activate, `fetchPipeline()` called on SSE reconnect, all SSE listeners fixed from `currentEs` → `es`; T18: `workspaceRegistry` state, `fetchWorkspaces()` called on SSE connect, `renderWorkspaces()` (builds full dropdown list), `updateWorkspacePill()` (SSE-driven pill + checkmark update without rebuilding list), `activateWorkspace()` (POSTs to `/api/workspaces/:id/activate`), `initWorkspaceSwitcher()` IIFE (outside-click + Escape close, "+ Add workspace" expand, form submit with 400 error display and auto-activate on success), `workspace-switch` SSE listener) |
 | `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces, pipeline group/card/filter/spec-panel component styles; T18: `.workspace-switcher`/`.workspace-pill` (monospace badge with `▾` arrow, amber border when open), `.workspace-dropdown` (absolute panel, z-index 200), `.workspace-item`/`.workspace-item-active`/`.workspace-item-check`, `.workspace-add-section`/`.workspace-add-btn`, `.workspace-form`/`.workspace-form-field`/`.workspace-form-error` (red), `.workspace-register-btn` (amber)) |
-| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation (`TASK_ID_RE` supports both `CONS-003` and `T13` styles), fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), `makeLedgerWatchHandler` (broadcasts `pipeline-update` SSE on `.task` file changes), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files), `PipelineTask` type (T13); T11: `readPidFile` (reads PID from a pid file), `stopProcess` (SIGTERM + SIGKILL-after-5s async stop), `defaultIsProcessAlive` (signal-0 liveness check), `defaultKillFn` (signal sender), `KillFn`/`IsAliveFn` injectable types; T14: `computeStuckSignals` (reads each agent's JSONL tail + ledger, returns `StuckAgent[]` with silent/loop/fail_storm signals), `StuckAgent` type; T9: `readAndValidatePostBody` (validates Content-Type header + JSON body for all POST handlers; returns `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure); T17: `Workspace`/`WorkspaceRegistry` types, `defaultWorkspacesPath` (`~/.gstack-console/workspaces.json`), `readWorkspaceRegistry` (reads file; returns empty registry on missing file), `writeWorkspaceRegistry` (mkdir-p + write), `bootstrapWorkspace` (idempotent: no-op if controlDir already listed; creates registry with controlDir as active workspace if absent, appends if registry exists but lacks that path); T19: `computeCostData(agents, agentsHome, sinceIso?)` (reads each agent's `logs/live-events.jsonl`, skips events without `cost_usd` or with non-numeric `cost_usd`, accumulates per-agent totals rounded to 4 dp), `CostAgentRow` type `{ agent: string; tokens_in: number; tokens_out: number; cost_usd: number }`, `CostResponse` type `{ agents: CostAgentRow[]; total: { tokens_in, tokens_out, cost_usd }; cachedAt: string }` (v7.1) |
+| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation (`TASK_ID_RE` supports both `CONS-003` and `T13` styles), fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), `makeLedgerWatchHandler` (broadcasts `pipeline-update` SSE on `.task` file changes), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files), `PipelineTask` type (T13); T11: `readPidFile` (reads PID from a pid file), `stopProcess` (SIGTERM + SIGKILL-after-5s async stop), `defaultIsProcessAlive` (signal-0 liveness check), `defaultKillFn` (signal sender), `KillFn`/`IsAliveFn` injectable types; T14: `computeStuckSignals` (reads each agent's JSONL tail + ledger, returns `StuckAgent[]` with silent/loop/fail_storm signals), `StuckAgent` type; T9: `readAndValidatePostBody` (validates Content-Type header + JSON body for all POST handlers; returns `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure); T17: `Workspace`/`WorkspaceRegistry` types, `defaultWorkspacesPath` (`~/.gstack-console/workspaces.json`), `readWorkspaceRegistry` (reads file; returns empty registry on missing file), `writeWorkspaceRegistry` (mkdir-p + write), `bootstrapWorkspace` (idempotent: no-op if controlDir already listed; creates registry with controlDir as active workspace if absent, appends if registry exists but lacks that path); T19: `computeCostData(agents, agentsHome, sinceIso?)` (reads each agent's `logs/live-events.jsonl`, skips events without `cost_usd` or with non-numeric `cost_usd`, accumulates per-agent totals rounded to 4 dp), `CostAgentRow` type `{ agent: string; tokens_in: number; tokens_out: number; cost_usd: number }`, `CostResponse` type `{ agents: CostAgentRow[]; total: { tokens_in, tokens_out, cost_usd }; cachedAt: string }`; T21: `TrustRule` type `{ id: string; agent: string; pattern: string; action: "approve" | "reject"; createdAt: string }`, `TrustLedger` type `{ rules: TrustRule[] }`, `defaultTrustPath` (`~/.gstack-console/trust.json`), `readTrustLedger` (parse file; returns `{ rules: [] }` on missing file or malformed JSON), `writeTrustLedger` (mkdir-p + `JSON.stringify` with 2-space indent) (v7.1) |
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
-| `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
-| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4), workspace registry (T17 AC1-AC7: GET/POST /api/workspaces, DELETE /api/workspaces/:id, POST /api/workspaces/:id/activate, bootstrapWorkspace AC5/AC6, validAgents reload AC7), T17a back-compat (CONTROL_DIR first boot AC1, existing registry AC2, validAgents from fleet.conf AC3, missing fleet.conf AC4), and T19 cost tracker (AC1: aggregation with known JSONL totals, AC2: 30s cache hit — second call uses cached result, AC3: cache invalidation on workspace-switch via `costInvalidateFn`, AC4: malformed `cost_usd` skipped without 500, AC5: `?since=` filter bypasses cache and returns filtered totals, AC6: no-cost-data → empty agents array) (144 total: 2 bash-wrapper + 142 server) |
+| `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk), polling behavior (poll_approval), and trust ledger auto-approve/reject (T21 AC4/AC5/AC6a/AC6b) (v7.1) |
+| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4), workspace registry (T17 AC1-AC7: GET/POST /api/workspaces, DELETE /api/workspaces/:id, POST /api/workspaces/:id/activate, bootstrapWorkspace AC5/AC6, validAgents reload AC7), T17a back-compat (CONTROL_DIR first boot AC1, existing registry AC2, validAgents from fleet.conf AC3, missing fleet.conf AC4), T19 cost tracker (AC1: aggregation with known JSONL totals, AC2: 30s cache hit — second call uses cached result, AC3: cache invalidation on workspace-switch via `costInvalidateFn`, AC4: malformed `cost_usd` skipped without 500, AC5: `?since=` filter bypasses cache and returns filtered totals, AC6: no-cost-data → empty agents array), and trust ledger (T21 AC1: GET /api/trust returns rules from file or empty array when absent, AC2: POST /api/trust validates agent/pattern/action and appends rule — unknown agent/empty pattern/invalid action each return 400, AC3: DELETE /api/trust/:id removes rule and returns 204 or 404 if not found) (152 total: 2 bash-wrapper + 150 server) |
 | `console/qa-smoke.sh` | QA smoke test for console UI — boots server on a random free port, asserts all GET endpoints return 200, T13 AC4/AC5 (pipeline JSON + `pipeline-groups` element), T15 AC1/AC2 (stuck endpoint + `stuck-cards` element + `stuck-alert-slot` DOM order), T16 AC6/AC7 (JSON content-type headers, fleet stop mock PID), T18 AC1 (`workspace-pill` element in HTML), T17 AC1 (`GET /api/workspaces` returns 200 with `workspaces` key) (v7.1) |
 
 ---
@@ -1597,6 +1597,142 @@ Parameters:
 
 ---
 
+## Trust ledger (T21)
+
+Directors frequently approve the same low-risk commands — `bun test`, `git status`. The trust ledger lets them say "always approve this pattern for agent X" so the bash wrapper auto-approves without writing a decision request or waiting for console input.
+
+### Trust rule file format
+
+Trust rules are stored in `~/.gstack-console/trust.json`:
+
+```json
+{
+  "rules": [
+    {
+      "id": "r1",
+      "agent": "agent-be",
+      "pattern": "bun test",
+      "action": "approve",
+      "createdAt": "2026-01-01T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+`id` is a `crypto.randomUUID()` assigned at creation. `pattern` is stored verbatim — the server does not validate it as a bash command. If the file does not exist, the server treats the ledger as empty.
+
+### GET /api/trust (AC1)
+
+Returns all current trust rules.
+
+```
+GET /api/trust
+```
+
+**Response (200):**
+```json
+{ "rules": [ { "id": "r1", "agent": "agent-be", "pattern": "bun test", "action": "approve", "createdAt": "..." } ] }
+```
+
+If `~/.gstack-console/trust.json` does not exist, returns `{ "rules": [] }` — never 404.
+
+### POST /api/trust (AC2)
+
+Creates a new trust rule and appends it to the file.
+
+```
+POST /api/trust
+Content-Type: application/json
+
+{ "agent": "agent-be", "pattern": "bun test", "action": "approve" }
+```
+
+**Response (200):**
+```json
+{ "rule": { "id": "abc-uuid", "agent": "agent-be", "pattern": "bun test", "action": "approve", "createdAt": "2026-01-01T12:00:00.000Z" } }
+```
+
+**Error responses:**
+
+| Condition | Status | Body |
+|---|---|---|
+| `agent` not in `validAgents` | 400 | `{ "error": "unknown agent" }` |
+| `pattern` absent or empty string | 400 | `{ "error": "pattern must be a non-empty string" }` |
+| `action` not `"approve"` or `"reject"` | 400 | `{ "error": "action must be 'approve' or 'reject'" }` |
+| Missing or wrong Content-Type | 400 | (standard `readAndValidatePostBody` error) |
+
+Write is read-modify-write: `readTrustLedger` loads the file (or `{ rules: [] }` if absent), the new rule is pushed, then `writeTrustLedger` writes `JSON.stringify(ledger, null, 2)` back to disk.
+
+### DELETE /api/trust/:id (AC3)
+
+Removes a trust rule by id.
+
+```
+DELETE /api/trust/abc-uuid
+```
+
+**Response (204):** Rule removed, no body.
+
+**Response (404):** `{ "error": "not found" }` if no rule matches the id.
+
+### Bash wrapper trust check (AC4/AC5/AC6)
+
+When `bin/bash` intercepts a command, it checks the trust ledger **before** writing a decision request file. The check uses `python3 -c` — no `jq`, no `node`, no `bun` dependency (stock macOS may lack these).
+
+```bash
+TRUST_FILE="$HOME/.gstack-console/trust.json"
+if [ -f "$TRUST_FILE" ]; then
+  TRUST_RESULT=$(python3 -c "
+import json, sys
+try:
+    ledger = json.load(open(sys.argv[1]))
+    rules = ledger.get('rules', [])
+    agent = sys.argv[2]
+    cmd = sys.argv[3]
+    for rule in rules:
+        if rule.get('agent') == agent and rule.get('pattern', '') in cmd:
+            print(rule.get('action', ''))
+            break
+except Exception:
+    pass
+" "$TRUST_FILE" "$AGENT" "$CMD" 2>/dev/null || echo "")
+  if [ "$TRUST_RESULT" = "approve" ]; then
+    exec "$REAL_BASH" "$@"
+  elif [ "$TRUST_RESULT" = "reject" ]; then
+    exit 1
+  fi
+fi
+```
+
+Matching rules (AC5): `rule['pattern'] in cmd` is a Python substring check — case-sensitive, first matching rule wins in order of creation. A pattern of `"bun test"` matches any command containing that string verbatim.
+
+Fallthrough (AC6): if `trust.json` does not exist, the `if [ -f "$TRUST_FILE" ]` guard skips the block entirely. If the file is malformed, the `except Exception: pass` silences the error and `TRUST_RESULT` is empty, so the wrapper falls through to the normal decision-request flow with no crash.
+
+### readTrustLedger / writeTrustLedger — server-utils.ts
+
+```ts
+export function readTrustLedger(filePath: string): TrustLedger
+export function writeTrustLedger(filePath: string, ledger: TrustLedger): void
+```
+
+`readTrustLedger` wraps `readFileSync` + `JSON.parse` in a try/catch — any error (file not found, malformed JSON) returns `{ rules: [] }`. `writeTrustLedger` calls `mkdirSync(dirname(filePath), { recursive: true })` then `writeFileSync(filePath, JSON.stringify(ledger, null, 2))`.
+
+`defaultTrustPath()` returns `join(homedir(), ".gstack-console", "trust.json")`.
+
+### AC → verification mapping (T21)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `describe("GET /api/trust (AC1)")` — 2 tests: missing file → `{ rules: [] }`; existing file with 1 rule → rules array returned | done_check |
+| AC2 | `describe("POST /api/trust (AC2)")` — 4 tests: valid POST → 200 + `{ rule }` + file written; unknown agent → 400; empty pattern → 400; invalid action → 400 | done_check |
+| AC3 | `describe("DELETE /api/trust/:id (AC3)")` — 2 tests: existing rule → 204 + rule removed from file; unknown id → 404 | done_check |
+| AC4 | `bash-wrapper.test.sh` — AC4 block: write trust.json with approve rule for `test_agent`; run `git push origin main`; assert exit 0 and no request file written | done_check |
+| AC5 | `bash-wrapper.test.sh` — AC5 block: pattern `"push"` (substring) matches `"git push origin main"`; assert exit 0 and no request file | done_check |
+| AC6a | `bash-wrapper.test.sh` — AC6a block: reject rule; run `git push`; assert exit 1 and no request file | done_check |
+| AC6b | `bash-wrapper.test.sh` — AC6b block: corrupt `trust.json` (`NOT JSON {{{`); run `git push`; assert wrapper falls through — request file written, exit non-zero after timeout | done_check |
+
+---
+
 ## Console UI — design system (v7.1)
 
 The console frontend uses a dark-theme design system coordinated with `docs/DESIGN.md`.
@@ -2269,9 +2405,19 @@ A `makeCostHandler` factory mirrors the server.ts `GET /api/cost` implementation
 
 Port 7890 is the shared cost server (AC1/AC4/AC5). Ports 7891 (AC3), 7892 (AC2), and 7893 (AC6) each spin up their own isolated server so cache state does not bleed between blocks.
 
+### Trust ledger tests — server.test.ts (T21 AC1–AC3)
+
+T21 adds 8 tests across 3 describe blocks. All blocks share a `makeTrustHandler` factory that mirrors the server.ts trust route logic with injectable `trustPath` and `validAgents` parameters, letting each block run against a controlled temp file without touching the real `~/.gstack-console/trust.json`. The server binds to `T21_PORT = 7890`; since server.test.ts runs serially and T19's cost server is closed by its `afterAll` before T21's `beforeAll` fires, port reuse is safe.
+
+| Describe block | AC | Tests | What they assert |
+|---|---|---|---|
+| `GET /api/trust (AC1)` | AC1 | 2 | Missing file → `{ rules: [] }` status 200; existing file with 1 rule → rules array with correct id and pattern |
+| `POST /api/trust (AC2)` | AC2 | 4 | Valid body → 200 `{ rule }` with id/agent/pattern/action; saved rule re-read from file; unknown agent → 400; empty pattern → 400; invalid action → 400 |
+| `DELETE /api/trust/:id (AC3)` | AC3 | 2 | Existing rule → 204 and file has 0 rules; unknown id → 404 |
+
 ### Test results
 
-All 144 tests pass (2 bash-wrapper + 142 server tests). Run the full suite with:
+All 152 tests pass (2 bash-wrapper + 150 server tests). Run the full suite with:
 
 ```bash
 bun test supervisor/console/     # runs all tests, exit 0 on pass
