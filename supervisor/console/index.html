@@ -138,9 +138,22 @@
 
   </div>
 
-  <!-- ── Cost tab panel (placeholder) ── -->
+  <!-- ── Cost tab panel (T20) ── -->
   <div id="section-cost" role="tabpanel" aria-labelledby="tab-cost" class="tab-panel" hidden>
-    <div class="cost-placeholder">Cost view — coming soon</div>
+    <table id="cost-table" class="cost-table" hidden>
+      <thead>
+        <tr>
+          <th>Agent</th>
+          <th>Tokens In</th>
+          <th>Tokens Out</th>
+          <th>Cost (USD)</th>
+        </tr>
+      </thead>
+      <tbody id="cost-tbody"></tbody>
+      <tfoot id="cost-tfoot"></tfoot>
+    </table>
+    <div id="cost-empty" class="cost-empty" hidden>No cost data yet — agents emit cost events as they run.</div>
+    <p id="cost-updated" class="cost-updated" hidden></p>
   </div>
 
 </div><!-- /page-body -->

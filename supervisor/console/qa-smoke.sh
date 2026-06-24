@@ -128,5 +128,34 @@ else
   printf '  FAIL  POST /api/fleet/stop mock stale PID → %s\n' "${STOP_RESP}" >&2; fail=$((fail + 1))
 fi
 
+# T20 AC7/AC1: GET /api/cost returns 200 JSON with agents key
+check "GET /api/cost" "${B}/api/cost"
+check_json "GET /api/cost JSON content-type" "${B}/api/cost"
+COST_BODY=$(curl -sf --max-time 5 "${B}/api/cost" 2>/dev/null) || COST_BODY=""
+if printf '%s' "${COST_BODY}" | grep -q '"agents"'; then
+  printf '  ok    cost JSON contains agents key\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  cost JSON missing agents key\n' >&2; fail=$((fail + 1))
+fi
+
+# T20 AC7: index.html contains cost-table element with header row
+if printf '%s' "${INDEX_BODY}" | grep -q 'id="cost-table"'; then
+  printf '  ok    index.html contains cost-table element\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  index.html missing cost-table element\n' >&2; fail=$((fail + 1))
+fi
+if printf '%s' "${INDEX_BODY}" | grep -q 'Cost (USD)'; then
+  printf '  ok    cost table has Cost (USD) header\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  cost table missing Cost (USD) header\n' >&2; fail=$((fail + 1))
+fi
+
+# T20 AC6: index.html contains cost empty-state message
+if printf '%s' "${INDEX_BODY}" | grep -q 'No cost data yet'; then
+  printf '  ok    cost empty-state message present in HTML\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  cost empty-state message missing from HTML\n' >&2; fail=$((fail + 1))
+fi
+
 printf '\n=== smoke: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [ "${fail}" -eq 0 ]

@@ -5,6 +5,7 @@ const FLEET_URL = '/api/fleet';
 const QUEUE_URL = '/api/queue';
 const PIPELINE_URL = '/api/pipeline';
 const STUCK_URL = '/api/stuck';
+const COST_URL = '/api/cost';
 const RECONNECT_DELAY_MS = 3000;
 const FLEET_STALE_MS = 30000;
 const DOMAIN_FILTER_KEY = 'console-pipeline-domain-filter';
@@ -30,6 +31,7 @@ let approvalCount = 0;
 let pipelineData = [];
 let pipelineDomainFilter = localStorage.getItem(DOMAIN_FILTER_KEY) || 'all';
 let pipelineBootstrapped = false;
+let lastCostFetch = 0;
 
 /* T15: stuck agent state */
 const stuckAgents = new Map(); // agent → { agent, signal, detail, since }
@@ -92,6 +94,7 @@ function switchTab(name) {
   /* Cost panel */
   if (name === 'cost') {
     sectionCost.removeAttribute('hidden');
+    fetchCost();
   } else {
     sectionCost.setAttribute('hidden', '');
   }
@@ -384,6 +387,67 @@ function initRestartModal() {
       .catch(() => {})
       .finally(() => modal.close());
   });
+}
+
+/* ── Cost tab ── */
+
+const fmtCost = new Intl.NumberFormat('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+const fmtTokens = new Intl.NumberFormat('en-US');
+
+async function fetchCost() {
+  lastCostFetch = Date.now();
+  try {
+    const res = await fetch(COST_URL);
+    if (!res.ok) return;
+    const data = await res.json();
+    renderCost(data);
+  } catch (_) {}
+}
+
+function renderCost(data) {
+  const table = $('cost-table');
+  const tbody = $('cost-tbody');
+  const tfoot = $('cost-tfoot');
+  const empty = $('cost-empty');
+  const updated = $('cost-updated');
+
+  if (!data || !data.agents || data.agents.length === 0) {
+    table.setAttribute('hidden', '');
+    empty.removeAttribute('hidden');
+    updated.setAttribute('hidden', '');
+    return;
+  }
+
+  empty.setAttribute('hidden', '');
+  table.removeAttribute('hidden');
+
+  tbody.innerHTML = '';
+  for (const a of data.agents) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${esc(a.agent)}</td>
+      <td class="cost-num-col">${fmtTokens.format(a.tokens_in)}</td>
+      <td class="cost-num-col">${fmtTokens.format(a.tokens_out)}</td>
+      <td class="cost-num-col">$${fmtCost.format(a.cost_usd)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  tfoot.innerHTML = '';
+  const tftr = document.createElement('tr');
+  tftr.className = 'cost-total-row';
+  tftr.innerHTML = `
+    <td><strong>Total</strong></td>
+    <td class="cost-num-col"><strong>${fmtTokens.format(data.total.tokens_in)}</strong></td>
+    <td class="cost-num-col"><strong>${fmtTokens.format(data.total.tokens_out)}</strong></td>
+    <td class="cost-num-col"><strong>$${fmtCost.format(data.total.cost_usd)}</strong></td>
+  `;
+  tfoot.appendChild(tftr);
+
+  if (data.cachedAt) {
+    updated.textContent = `Last updated: ${relativeTime(data.cachedAt)}`;
+    updated.removeAttribute('hidden');
+  }
 }
 
 /* ── Pipeline ── */
@@ -862,6 +926,7 @@ function connect() {
     if (ev.type === 'fleet-update') {
       fleetLastEventTs = Date.now();
       if (currentTab === 'fleet') fetchFleet(ev.ts);
+      if (currentTab === 'cost' && Date.now() - lastCostFetch >= 30000) fetchCost();
 
       /* AC6: auto-dismiss stuck card if agent moved to a new task or was stopped */
       if (ev.agent && stuckAgents.has(ev.agent)) {
@@ -894,6 +959,71 @@ function connect() {
     es.close();
     setTimeout(connect, RECONNECT_DELAY_MS);
   });
+}
+
+/* ── Cost tab (T20) ── */
+
+const fmtCost = new Intl.NumberFormat('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+const fmtTokens = new Intl.NumberFormat('en-US');
+
+async function fetchCost() {
+  lastCostFetch = Date.now();
+  try {
+    const res = await fetch(COST_URL);
+    if (!res.ok) return;
+    const data = await res.json();
+    renderCost(data);
+  } catch (_) {}
+}
+
+function renderCost(data) {
+  const table = $('cost-table');
+  const tbody = $('cost-tbody');
+  const tfoot = $('cost-tfoot');
+  const empty = $('cost-empty');
+  const updated = $('cost-updated');
+
+  if (!data || !data.agents || data.agents.length === 0) {
+    table.style.display = 'none';
+    empty.style.display = '';
+    updated.style.display = 'none';
+    return;
+  }
+
+  empty.style.display = 'none';
+  table.style.display = '';
+
+  tbody.innerHTML = '';
+  for (const row of data.agents) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="cost-agent">${esc(row.agent)}</td>
+      <td class="cost-tokens">${fmtTokens.format(row.tokens_in)}</td>
+      <td class="cost-tokens">${fmtTokens.format(row.tokens_out)}</td>
+      <td class="cost-usd">$${fmtCost.format(row.cost_usd)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  tfoot.innerHTML = '';
+  if (data.total) {
+    const tr = document.createElement('tr');
+    tr.className = 'cost-total-row';
+    tr.innerHTML = `
+      <td><strong>Total</strong></td>
+      <td class="cost-tokens">${fmtTokens.format(data.total.tokens_in)}</td>
+      <td class="cost-tokens">${fmtTokens.format(data.total.tokens_out)}</td>
+      <td class="cost-usd"><strong>$${fmtCost.format(data.total.cost_usd)}</strong></td>
+    `;
+    tfoot.appendChild(tr);
+  }
+
+  if (data.cachedAt) {
+    const secsAgo = Math.round((Date.now() - new Date(data.cachedAt).getTime()) / 1000);
+    const label = secsAgo < 5 ? 'just now' : `${secsAgo}s ago`;
+    updated.textContent = `Last updated: ${label}`;
+    updated.style.display = '';
+  }
 }
 
 /* ── HTML escape ── */
@@ -950,6 +1080,9 @@ window.__injectStuck = function(ev) {
     since: ev.since || new Date().toISOString(),
   });
   renderStuckSection();
+};
+window.__injectCostData = function(data) {
+  renderCost(data);
 };
 window.__injectFleetUpdate = function(ev) {
   const payload = { type: 'fleet-update', ...ev };
