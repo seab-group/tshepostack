@@ -81,13 +81,13 @@ else
   printf '  FAIL  index.html missing stuck-cards element\n' >&2; fail=$((fail + 1))
 fi
 
-# T15 AC2: section-stuck element appears before section-attention element in HTML
-STUCK_LINE=$(printf '%s' "${INDEX_BODY}" | grep -n 'id="section-stuck"' | head -1 | cut -d: -f1)
+# T15 AC2: stuck-alert-slot element appears before section-attention element in HTML
+STUCK_LINE=$(printf '%s' "${INDEX_BODY}" | grep -n 'id="stuck-alert-slot"' | head -1 | cut -d: -f1)
 ATTN_LINE=$(printf '%s' "${INDEX_BODY}" | grep -n 'id="section-attention"' | head -1 | cut -d: -f1)
 if [ -n "${STUCK_LINE}" ] && [ -n "${ATTN_LINE}" ] && [ "${STUCK_LINE}" -lt "${ATTN_LINE}" ]; then
-  printf '  ok    section-stuck appears before section-attention in DOM\n'; pass=$((pass + 1))
+  printf '  ok    stuck-alert-slot appears before section-attention in DOM\n'; pass=$((pass + 1))
 else
-  printf '  FAIL  section-stuck not before section-attention in DOM\n' >&2; fail=$((fail + 1))
+  printf '  FAIL  stuck-alert-slot not before section-attention in DOM\n' >&2; fail=$((fail + 1))
 fi
 
 printf '\n=== smoke: %d passed, %d failed ===\n' "${pass}" "${fail}"
