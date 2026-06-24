@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Workspace switcher UI — switch ECOBA engagements from the console header (T18)
+
+Directors can now switch the active workspace without leaving the Fleet Console. A compact pill in the page header shows the current workspace name and opens a dropdown on click. From the dropdown you can switch to any registered workspace or register a new one by entering a name and its control-repo path — the server activates it and the pill updates instantly over SSE, with no page reload.
+
+#### Added
+- Workspace pill (`<details>/<summary id="workspace-pill">`) in the console page header, between the subtitle and the SSE status dot. Shows the active workspace name (truncated to 24 chars with `…`) or "No workspace" when `activeId` is null (T18 AC1).
+- Dropdown (`<div class="workspace-dropdown">`) listing all registered workspaces; active workspace is marked with a `✓` checkmark. Clicking a non-active workspace calls `POST /api/workspaces/:id/activate` and closes the dropdown (T18 AC2).
+- "+ Add workspace" button at the bottom of the dropdown expands an inline form with a Name field and a Control directory field (placeholder: `/Users/you/control-repo`) plus a Register button (T18 AC3).
+- `workspace-switch` SSE listener in `console.js` calls `updateWorkspacePill(workspaceId, name)` on every activation event — updates the pill text and checkmark without rebuilding the full list (T18 AC4).
+- 400 error from `POST /api/workspaces` is displayed in red below the Control directory field via `response.error` (T18 AC5).
+- On successful registration the form collapses, the new workspace is appended to the dropdown list, and it is auto-activated (T18 AC6).
+- Outside-click and Escape key both close the dropdown (T18 AC7).
+- 19 CSS classes for the workspace switcher component (`.workspace-switcher`, `.workspace-pill`, `.workspace-dropdown`, `.workspace-item`, `.workspace-item-active`, `.workspace-item-check`, `.workspace-add-section`, `.workspace-add-btn`, `.workspace-form`, `.workspace-form-field`, `.workspace-form-error`, `.workspace-register-btn`, and supporting classes).
+- `qa-smoke.sh`: 2 new checks — `workspace-pill` element in `index.html` (T18 AC1 e2e_check) and `GET /api/workspaces` returning 200 with `workspaces` key (T17 AC1).
+
 ### CONTROL_DIR back-compat invariant locked in with tests (T17a)
 
 Any script that sets `CONTROL_DIR` and launches the console server now has four tests watching its back. The invariant — that `bootstrapWorkspace` auto-registers `CONTROL_DIR` on first boot and appends without clobbering the active workspace when a registry already exists — is tested in isolation with temp dirs, so a future refactor that silently breaks back-compat will fail CI immediately.
