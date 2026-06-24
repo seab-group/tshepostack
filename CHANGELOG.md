@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### GET /api/stuck — regression guard against agentList ReferenceError (BUG-2)
+
+A static test now prevents the `GET /api/stuck` crash from coming back via a future merge conflict. The crash itself was already fixed in main (T11-amended renamed `agentList` to `supervisorAgentList`; T14 introduced the stuck route using the old name before that rename landed). The regression guard reads `server.ts` source at test time and asserts that `computeStuckSignals` is never called with `agentList` — a wrong variable name fails CI immediately, before any runtime crash can reach production.
+
+#### Added
+- `describe("BUG-2: GET /api/stuck agentList regression guard")` — 1 test in `server.test.ts`: reads `server.ts` with `readFileSync` and asserts `/computeStuckSignals\s*\(\s*agentList\b/` does not match (131 total: 2 bash-wrapper + 129 server).
+
 ### POST body validation + draft-decision mailbox note (T9)
 
 All POST endpoints now reject requests immediately when the `Content-Type` header is missing or wrong, or when the body is not valid JSON. Previously each handler read raw body bytes and called `JSON.parse` independently — a missing header was silently accepted. Now a single shared `readAndValidatePostBody()` utility handles both checks and returns HTTP 400 before any filesystem operation is attempted.
