@@ -22,6 +22,30 @@
   <div class="page-brand">Fleet</div>
   <div class="page-subtitle">agent management console</div>
   <div class="page-header-spacer"></div>
+  <!-- T18: workspace switcher pill + dropdown -->
+  <details class="workspace-switcher" id="workspace-switcher">
+    <summary class="workspace-pill" id="workspace-pill">No workspace</summary>
+    <div class="workspace-dropdown">
+      <div class="workspace-list" id="workspace-list"></div>
+      <div class="workspace-add-section">
+        <button class="workspace-add-btn" id="workspace-add-btn" type="button">+ Add workspace</button>
+        <form class="workspace-form" id="workspace-form" hidden>
+          <div class="workspace-form-field">
+            <label for="workspace-name-input">Name</label>
+            <input type="text" id="workspace-name-input" required placeholder="Project Alpha">
+          </div>
+          <div class="workspace-form-field">
+            <label for="workspace-dir-input">Control directory</label>
+            <input type="text" id="workspace-dir-input" required placeholder="/Users/you/control-repo">
+            <div class="workspace-form-error" id="workspace-form-error" style="display:none"></div>
+          </div>
+          <div class="workspace-form-actions">
+            <button type="submit" class="workspace-register-btn">Register</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </details>
   <div class="sse-indicator">
     <div class="sse-dot" id="sse-dot"></div>
     <span id="sse-label">live</span>
