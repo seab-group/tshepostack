@@ -2050,7 +2050,7 @@ Port 7880 is used for the HTTP server tests; AC5 and AC6 are pure unit tests tha
 
 ### Test results
 
-All 135 tests pass (2 bash-wrapper + 133 server tests). Run the full suite with:
+All 146 tests pass (2 bash-wrapper + 144 server tests). Run the full suite with:
 
 ```bash
 bun test supervisor/console/     # runs all tests, exit 0 on pass
