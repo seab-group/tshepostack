@@ -17,7 +17,7 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation (`TASK_ID_RE` supports both `CONS-003` and `T13` styles), fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), `makeLedgerWatchHandler` (broadcasts `pipeline-update` SSE on `.task` file changes), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files), `PipelineTask` type (T13); T11: `readPidFile` (reads PID from a pid file), `stopProcess` (SIGTERM + SIGKILL-after-5s async stop), `defaultIsProcessAlive` (signal-0 liveness check), `defaultKillFn` (signal sender), `KillFn`/`IsAliveFn` injectable types; T14: `computeStuckSignals` (reads each agent's JSONL tail + ledger, returns `StuckAgent[]` with silent/loop/fail_storm signals), `StuckAgent` type; T9: `readAndValidatePostBody` (validates Content-Type header + JSON body for all POST handlers; returns `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure); T17: `Workspace`/`WorkspaceRegistry` types, `defaultWorkspacesPath` (`~/.gstack-console/workspaces.json`), `readWorkspaceRegistry` (reads file; returns empty registry on missing file), `writeWorkspaceRegistry` (mkdir-p + write), `bootstrapWorkspace` (idempotent: no-op if controlDir already listed; creates registry with controlDir as active workspace if absent, appends if registry exists but lacks that path) (v7.1) |
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
-| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4), and workspace registry (T17 AC1-AC7: GET/POST /api/workspaces, DELETE /api/workspaces/:id, POST /api/workspaces/:id/activate, bootstrapWorkspace AC5/AC6, validAgents reload AC7) (146 total: 2 bash-wrapper + 144 server) |
+| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4), workspace registry (T17 AC1-AC7: GET/POST /api/workspaces, DELETE /api/workspaces/:id, POST /api/workspaces/:id/activate, bootstrapWorkspace AC5/AC6, validAgents reload AC7), and T17a back-compat (CONTROL_DIR first boot AC1, existing registry AC2, validAgents from fleet.conf AC3, missing fleet.conf AC4) (150 total: 2 bash-wrapper + 148 server) |
 | `console/qa-smoke.sh` | QA smoke test for console UI — asserts page title, nav bar, Fleet tab presence, T6 AC1/AC2/AC4/AC5 (Dicebear avatar src, elapsed time format, HIGH risk badge, Unblock button), and T13 AC4/AC5 (pipeline endpoint 200, `pipeline-groups` element in HTML, `tasks` key in pipeline JSON) via gstack browse (v7.1) |
 
 ---
@@ -1405,6 +1405,26 @@ data: { "workspaceId": "<id>", "name": "<name>", "controlDir": "<path>" }
 | AC6 | `describe("bootstrapWorkspace AC5/AC6")` — existing registry without that controlDir: new entry appended, original activeId preserved | done_check |
 | AC7 | `describe("POST /api/workspaces/:id/activate validAgents reload (AC7)")` — activate call triggers `rebuildValidAgentsFn` with the activated workspace's `controlDir` | done_check |
 
+### CONTROL_DIR back-compat invariant (T17a)
+
+T17a locks in the invariant that `CONTROL_DIR` env causes `bootstrapWorkspace` to auto-register the path on startup — preserving backward compatibility with all existing `run-agent.sh` and CI scripts that set this variable without creating a `workspaces.json` first.
+
+The invariant has two parts:
+
+- **First boot (AC1):** If `CONTROL_DIR` is set and `workspaces.json` does not yet exist, `bootstrapWorkspace` creates the file with one entry using `CONTROL_DIR` as `controlDir`. That workspace's UUID is written as `activeId`. `GET /api/workspaces` returns exactly this workspace with a valid UUID4 `id`.
+- **Existing registry (AC2):** If `workspaces.json` already exists (one or more workspaces with an established `activeId`), `bootstrapWorkspace` appends the new `CONTROL_DIR` path as a second workspace without changing `activeId`. The pre-existing active workspace remains active.
+
+`parseFleetConf` is also tested standalone (AC3/AC4) to confirm that the `validAgents` Set it produces is correct when `fleet.conf` is present, and is an empty `Set` (no crash) when the file is absent.
+
+### AC → verification mapping (T17a)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `describe("CONTROL_DIR back-compat: first boot (AC1)")` — no `workspaces.json`; `bootstrapWorkspace` called; GET returns 1 workspace with UUID `activeId` matching the workspace id | done_check |
+| AC2 | `describe("CONTROL_DIR back-compat: existing registry (AC2)")` — pre-existing registry with `existingActiveId`; `bootstrapWorkspace` appends new workspace; GET returns 2 workspaces; `activeId` still `existingActiveId` | done_check |
+| AC3 | `describe("CONTROL_DIR back-compat: validAgents (AC3)")` — `parseFleetConf` on a 3-line `fleet.conf`; result Set has size 3 with expected agent names | done_check |
+| AC4 | `describe("CONTROL_DIR back-compat: missing fleet.conf (AC4)")` — `parseFleetConf` call wrapped in try/catch on absent file; `validAgents` is empty Set, no exception propagates | done_check |
+
 ---
 
 ## Console UI — design system (v7.1)
@@ -2049,9 +2069,22 @@ T17 adds 7 describe blocks (11 tests total) behind port 7880. All blocks use a `
 
 Port 7880 is used for the HTTP server tests; AC5 and AC6 are pure unit tests that call `bootstrapWorkspace` directly with temp file paths.
 
+### CONTROL_DIR back-compat tests — server.test.ts (T17a AC1–AC4)
+
+T17a adds 4 describe blocks (4 tests total) after the T17 workspace registry suite. The blocks use the same `bootstrapWorkspace`, `makeWorkspacesHandler`, `writeWorkspaceRegistry`, and `parseFleetConf` imports as the T17 tests.
+
+| Describe block | AC | Tests | Port | What they assert |
+|---|---|---|---|---|
+| `CONTROL_DIR back-compat: first boot (AC1)` | AC1 | 1 | 7885 | `bootstrapWorkspace` on absent `workspaces.json` → GET returns 1 workspace; `activeId` equals that workspace's UUID4 `id`; `controlDir` matches the tmp dir |
+| `CONTROL_DIR back-compat: existing registry (AC2)` | AC2 | 1 | 7886 | Pre-existing registry with 1 workspace and `existingActiveId`; `bootstrapWorkspace` appends new path → GET returns 2 workspaces; `activeId` still `existingActiveId`; new workspace present but not active |
+| `CONTROL_DIR back-compat: validAgents (AC3)` | AC3 | 1 | — | `parseFleetConf` on a 3-line `fleet.conf` → Set size 3; `has("agent-be")`, `has("agent-qa")`, `has("agent-fe")` all true |
+| `CONTROL_DIR back-compat: missing fleet.conf (AC4)` | AC4 | 1 | — | `readFileSync` on absent path throws; catch path sets `validAgents = new Set()`; size 0, no exception propagates |
+
+AC3 and AC4 are pure unit tests (no HTTP server). All temp dirs use `mkdtempSync` and are cleaned up in `afterAll`.
+
 ### Test results
 
-All 146 tests pass (2 bash-wrapper + 144 server tests). Run the full suite with:
+All 150 tests pass (2 bash-wrapper + 148 server tests). Run the full suite with:
 
 ```bash
 bun test supervisor/console/     # runs all tests, exit 0 on pass
