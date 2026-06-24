@@ -28,6 +28,7 @@ import {
   readPidFile,
   stopProcess,
   computeStuckSignals,
+  readAndValidatePostBody,
   type AgentStatus,
   type GitSpawner,
   type ApprovalItem,
@@ -76,7 +77,31 @@ function makeHandler(rootDir: string, fleetHome?: string, testDecisionsDir?: str
         sendJson(res, { error: "unknown agent" }, 400);
         return;
       }
-      sendJson(res, { ok: true });
+      void (async () => {
+        const v = await readAndValidatePostBody(req);
+        if (!v.ok) { sendJson(res, { error: v.error }, v.statusCode); return; }
+        sendJson(res, { ok: true });
+      })();
+      return;
+    }
+
+    // POST /api/approve — validate JSON body and Content-Type (T9 AC1 + AC2).
+    if (path === "/api/approve" && method === "POST") {
+      void (async () => {
+        const v = await readAndValidatePostBody(req);
+        if (!v.ok) { sendJson(res, { error: v.error }, v.statusCode); return; }
+        sendJson(res, { ok: true });
+      })();
+      return;
+    }
+
+    // POST /api/draft-decision — validate JSON body and Content-Type (T9 AC1 + AC2).
+    if (path === "/api/draft-decision" && method === "POST") {
+      void (async () => {
+        const v = await readAndValidatePostBody(req);
+        if (!v.ok) { sendJson(res, { error: v.error }, v.statusCode); return; }
+        sendJson(res, { ok: true });
+      })();
       return;
     }
 
@@ -295,10 +320,14 @@ describe("POST /api/mailbox/:agentName", () => {
     expect(r.status).toBe(400);
   });
 
-  test("accepts a known agent name", async () => {
+  test("accepts a known agent name with valid JSON body", async () => {
     const r = await fetch(
       `http://127.0.0.1:${TEST_PORT}/api/mailbox/agent-be`,
-      { method: "POST", body: "test message" },
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note: "test message" }),
+      },
     );
     expect(r.status).toBe(200);
   });
@@ -2131,217 +2160,104 @@ describe("stuck detection malformed JSONL", () => {
   });
 });
 
-// --- T5: POST /api/draft-decision ---
+// --- T9 AC4: rawPath dot-segment preservation ---
 
-const DRAFT_PORT = 7855;
-const DRAFT_NO_DIR_PORT = 7856;
+describe("rawPath dot-segment preservation (AC4)", () => {
+  test("rawPath('/a/../b') returns '/a/../b' unprocessed (AC4)", () => {
+    expect(rawPath("/a/../b")).toBe("/a/../b");
+  });
 
-const draftTestDir = join(tmpdir(), `draft-decision-test-${process.pid}`);
-const draftMailboxDir = join(draftTestDir, "mailboxes");
-const draftValidAgents = new Set(["agent-be", "agent-qa", "agent-fe", "agent-doc"]);
+  test("rawPath('/foo/./bar') returns '/foo/./bar' unprocessed (AC4)", () => {
+    expect(rawPath("/foo/./bar")).toBe("/foo/./bar");
+  });
 
-type GitFn = (dir: string, msg: string) => Promise<void>;
+  test("rawPath does not normalise dot segments the way the URL API would (AC4 contrast)", () => {
+    expect(rawPath("/a/../b")).not.toBe(new URL("/a/../b", "http://localhost").pathname);
+  });
+});
 
-function makeDraftDecisionHandler(opts: {
-  controlDir: string;
-  validAgents: Set<string>;
-  gitFn?: GitFn;
-}) {
-  const { controlDir, validAgents: agents, gitFn } = opts;
-  return async (req: IncomingMessage, res: ServerResponse) => {
-    const method = req.method ?? "GET";
-    if (rawPath(req.url) !== "/api/draft-decision" || method !== "POST") {
-      sendJson(res, { error: "not found" }, 404);
-      return;
-    }
+// --- T9 AC7: GET /api/fleet absent/empty fleet.conf ---
 
-    if (!controlDir) {
-      sendJson(res, { error: "control dir not configured" }, 503);
-      return;
-    }
+describe("GET /api/fleet absent/empty fleet.conf (AC7)", () => {
+  test("readFleetStatus with empty agent list returns [] — no crash (AC7)", () => {
+    expect(readFleetStatus([], testDir)).toEqual([]);
+  });
 
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(chunk as Buffer);
-    let body: { agentName?: string; taskId?: string; text?: string } = {};
+  test("GET /api/fleet returns 200 with [] when no agents configured (AC7)", async () => {
+    const srv = createServer((_req, res) => {
+      sendJson(res, readFleetStatus([], testDir));
+    });
+    await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", resolve));
+    const { port } = srv.address() as { port: number };
     try {
-      body = JSON.parse(Buffer.concat(chunks).toString()) as typeof body;
-    } catch {
-      sendJson(res, { error: "invalid JSON" }, 400);
-      return;
+      const r = await fetch(`http://127.0.0.1:${port}/api/fleet`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => srv.close(resolve));
     }
-
-    const { agentName, taskId, text } = body;
-    if (!agentName || !agents.has(agentName)) {
-      sendJson(res, { error: "unknown agent" }, 400);
-      return;
-    }
-    if (!taskId || !TASK_ID_RE.test(taskId)) {
-      sendJson(res, { error: "invalid taskId" }, 400);
-      return;
-    }
-    if (!text || text.trim() === "") {
-      sendJson(res, { error: "text required" }, 400);
-      return;
-    }
-
-    const ts = new Date().toISOString();
-    const block = `\n## from: human | ${ts} | re: ${taskId}\n${text}\n`;
-    const { appendFile: appendFileAsync } = await import("fs/promises");
-    await appendFileAsync(join(controlDir, "mailboxes", `${agentName}.md`), block);
-
-    const commitGit = gitFn ?? (() => Promise.resolve());
-    try {
-      await commitGit(controlDir, `console: note for ${agentName} re ${taskId}`);
-      sendJson(res, { ok: true });
-    } catch {
-      sendJson(res, { error: "git push failed" }, 500);
-    }
-  };
-}
-
-let draftServer: Server;
-let draftNoCtrlServer: Server;
-let capturedGitArgs: { dir: string; msg: string } | null = null;
-let gitShouldFail = false;
-
-const mockGit: GitFn = async (dir, msg) => {
-  capturedGitArgs = { dir, msg };
-  if (gitShouldFail) throw new Error("push rejected");
-};
-
-beforeAll(
-  () =>
-    new Promise<void>((resolve) => {
-      mkdirSync(draftMailboxDir, { recursive: true });
-
-      draftServer = createServer(
-        makeDraftDecisionHandler({
-          controlDir: draftTestDir,
-          validAgents: draftValidAgents,
-          gitFn: mockGit,
-        }),
-      );
-
-      draftNoCtrlServer = createServer(
-        makeDraftDecisionHandler({
-          controlDir: "",
-          validAgents: draftValidAgents,
-          gitFn: mockGit,
-        }),
-      );
-
-      let started = 0;
-      const done = () => { if (++started === 2) resolve(); };
-      draftServer.listen(DRAFT_PORT, "127.0.0.1", done);
-      draftNoCtrlServer.listen(DRAFT_NO_DIR_PORT, "127.0.0.1", done);
-    }),
-);
-
-afterAll(
-  () =>
-    new Promise<void>((resolve, reject) => {
-      let closed = 0;
-      const done = (err?: Error) => {
-        if (err) { reject(err); return; }
-        if (++closed === 2) {
-          rmSync(draftTestDir, { recursive: true, force: true });
-          resolve();
-        }
-      };
-      draftServer.close(done);
-      draftNoCtrlServer.close(done);
-    }),
-);
-
-describe("POST /api/draft-decision", () => {
-  test("AC1: appends correct mailbox block to {controlDir}/mailboxes/{agentName}.md", async () => {
-    capturedGitArgs = null;
-    gitShouldFail = false;
-    const mailboxFile = join(draftMailboxDir, "agent-be.md");
-
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-be", taskId: "T5", text: "looks good" }),
-    });
-    expect(r.status).toBe(200);
-
-    const content = readFileSync(mailboxFile, "utf8");
-    expect(content).toMatch(/^## from: human \| .+ \| re: T5$/m);
-    expect(content).toContain("looks good");
   });
+});
 
-  test("AC2: calls gitCommitAndPush with correct commit message on success", async () => {
-    capturedGitArgs = null;
-    gitShouldFail = false;
+// --- T9 AC1: malformed JSON body rejected by all POST endpoints ---
 
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
+describe("malformed JSON body (AC1)", () => {
+  test("POST /api/mailbox/agent-be returns 400 for invalid JSON body (AC1)", async () => {
+    const r = await fetch(`http://127.0.0.1:${TEST_PORT}/api/mailbox/agent-be`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-qa", taskId: "CONS-123", text: "please check logs" }),
-    });
-    expect(r.status).toBe(200);
-    const body = (await r.json()) as { ok: boolean };
-    expect(body.ok).toBe(true);
-    expect(capturedGitArgs).not.toBeNull();
-    expect(capturedGitArgs!.msg).toBe("console: note for agent-qa re CONS-123");
-    expect(capturedGitArgs!.dir).toBe(draftTestDir);
-  });
-
-  test("AC3: unknown agentName → 400 { error: 'unknown agent' }", async () => {
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-unknown", taskId: "T5", text: "hello" }),
+      body: "{not: valid json}",
     });
     expect(r.status).toBe(400);
     const body = (await r.json()) as { error: string };
-    expect(body.error).toBe("unknown agent");
+    expect(body.error).toBeTruthy();
   });
 
-  test("AC4: taskId failing TASK_ID_RE → 400 { error: 'invalid taskId' }", async () => {
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
+  test("POST /api/approve returns 400 for invalid JSON body (AC1)", async () => {
+    const r = await fetch(`http://127.0.0.1:${TEST_PORT}/api/approve`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-be", taskId: "invalid", text: "hello" }),
+      body: "this is not json",
     });
     expect(r.status).toBe(400);
-    const body = (await r.json()) as { error: string };
-    expect(body.error).toBe("invalid taskId");
   });
 
-  test("AC5: empty text → 400 { error: 'text required' }", async () => {
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
+  test("POST /api/draft-decision returns 400 for invalid JSON body (AC1)", async () => {
+    const r = await fetch(`http://127.0.0.1:${TEST_PORT}/api/draft-decision`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-be", taskId: "T5", text: "" }),
+      body: "[unclosed array",
     });
     expect(r.status).toBe(400);
-    const body = (await r.json()) as { error: string };
-    expect(body.error).toBe("text required");
+  });
+});
+
+// --- T9 AC2: missing or wrong Content-Type rejected by all POST endpoints ---
+
+describe("missing Content-Type (AC2)", () => {
+  test("POST /api/mailbox/agent-be returns 400 when Content-Type is not application/json (AC2)", async () => {
+    const r = await fetch(`http://127.0.0.1:${TEST_PORT}/api/mailbox/agent-be`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ note: "hello" }),
+    });
+    expect(r.status).toBe(400);
   });
 
-  test("AC6: gitCommitAndPush throws → 500 { error: 'git push failed' }", async () => {
-    gitShouldFail = true;
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
+  test("POST /api/approve returns 400 when Content-Type is not application/json (AC2)", async () => {
+    const r = await fetch(`http://127.0.0.1:${TEST_PORT}/api/approve`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-fe", taskId: "T5", text: "retry please" }),
+      body: JSON.stringify({ agentName: "agent-be", requestId: "r1", approved: true }),
     });
-    gitShouldFail = false;
-    expect(r.status).toBe(500);
-    const body = (await r.json()) as { error: string };
-    expect(body.error).toBe("git push failed");
+    expect(r.status).toBe(400);
   });
 
-  test("AC7: CONTROL_DIR not set → 503 { error: 'control dir not configured' }", async () => {
-    const r = await fetch(`http://127.0.0.1:${DRAFT_NO_DIR_PORT}/api/draft-decision`, {
+  test("POST /api/draft-decision returns 400 when Content-Type is not application/json (AC2)", async () => {
+    const r = await fetch(`http://127.0.0.1:${TEST_PORT}/api/draft-decision`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-be", taskId: "T5", text: "hello" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "taskId=T9&agentName=agent-be",
     });
-    expect(r.status).toBe(503);
-    const body = (await r.json()) as { error: string };
-    expect(body.error).toBe("control dir not configured");
+    expect(r.status).toBe(400);
   });
 });

@@ -34,6 +34,7 @@ import {
   defaultKillFn,
   stopProcess,
   computeStuckSignals,
+  readAndValidatePostBody,
 } from "./server-utils.ts";
 
 // Validate PORT early — before any filesystem reads (AC5: exit 1 before bind).
@@ -51,12 +52,14 @@ const supervisorDir = dirname(__dirname); // directory containing console/
 
 
 async function handleMailbox(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  const body = Buffer.concat(chunks).toString();
+  const parsed = await readAndValidatePostBody(req);
+  if (!parsed.ok) {
+    sendJson(res, { error: parsed.error }, parsed.statusCode);
+    return;
+  }
 
   const mailboxFile = join(controlDir, "mailboxes", `${agentName}.md`);
-  await appendFile(mailboxFile, body ? `\n${body}\n` : "\n");
+  await appendFile(mailboxFile, parsed.raw ? `\n${parsed.raw}\n` : "\n");
 
   try {
     await gitCommitAndPush(controlDir, `mailbox(${agentName}): console message`);
@@ -69,11 +72,14 @@ async function handleMailbox(req: IncomingMessage, res: ServerResponse, agentNam
 
 // AC3/AC4: write decision file + schedule 60s unlink (gives bash wrapper time to read).
 async function handleApprove(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  const parsed = await readAndValidatePostBody(req);
+  if (!parsed.ok) {
+    sendJson(res, { error: parsed.error }, parsed.statusCode);
+    return;
+  }
   let body: { agentName?: string; requestId?: string; approved?: boolean } = {};
   try {
-    body = JSON.parse(Buffer.concat(chunks).toString()) as typeof body;
+    body = parsed.json as typeof body;
   } catch {
     sendJson(res, { error: "invalid JSON" }, 400);
     return;
@@ -159,21 +165,18 @@ function broadcast(frame: string): void {
 
 // T5: POST /api/draft-decision — append human note to agent mailbox + git commit.
 async function handleDraftDecision(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const parsed = await readAndValidatePostBody(req);
+  if (!parsed.ok) {
+    sendJson(res, { error: parsed.error }, parsed.statusCode);
+    return;
+  }
+
   if (!controlDir) {
     sendJson(res, { error: "control dir not configured" }, 503);
     return;
   }
 
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  let body: { agentName?: string; taskId?: string; text?: string } = {};
-  try {
-    body = JSON.parse(Buffer.concat(chunks).toString()) as typeof body;
-  } catch {
-    sendJson(res, { error: "invalid JSON" }, 400);
-    return;
-  }
-
+  const body = parsed.json as { agentName?: string; taskId?: string; text?: string };
   const { agentName, taskId, text } = body;
 
   if (!agentName || !validAgents.has(agentName)) {
