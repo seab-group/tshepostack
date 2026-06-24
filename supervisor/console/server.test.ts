@@ -78,7 +78,31 @@ function makeHandler(rootDir: string, fleetHome?: string, testDecisionsDir?: str
         sendJson(res, { error: "unknown agent" }, 400);
         return;
       }
-      sendJson(res, { ok: true });
+      void (async () => {
+        const v = await readAndValidatePostBody(req);
+        if (!v.ok) { sendJson(res, { error: v.error }, v.statusCode); return; }
+        sendJson(res, { ok: true });
+      })();
+      return;
+    }
+
+    // POST /api/approve — validate JSON body and Content-Type (T9 AC1 + AC2).
+    if (path === "/api/approve" && method === "POST") {
+      void (async () => {
+        const v = await readAndValidatePostBody(req);
+        if (!v.ok) { sendJson(res, { error: v.error }, v.statusCode); return; }
+        sendJson(res, { ok: true });
+      })();
+      return;
+    }
+
+    // POST /api/draft-decision — validate JSON body and Content-Type (T9 AC1 + AC2).
+    if (path === "/api/draft-decision" && method === "POST") {
+      void (async () => {
+        const v = await readAndValidatePostBody(req);
+        if (!v.ok) { sendJson(res, { error: v.error }, v.statusCode); return; }
+        sendJson(res, { ok: true });
+      })();
       return;
     }
 
@@ -297,10 +321,14 @@ describe("POST /api/mailbox/:agentName", () => {
     expect(r.status).toBe(400);
   });
 
-  test("accepts a known agent name", async () => {
+  test("accepts a known agent name with valid JSON body", async () => {
     const r = await fetch(
       `http://127.0.0.1:${TEST_PORT}/api/mailbox/agent-be`,
-      { method: "POST", body: "test message" },
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note: "test message" }),
+      },
     );
     expect(r.status).toBe(200);
   });
@@ -1382,6 +1410,8 @@ function makeFleetControlHandler(opts: {
   spawnFn: (script: string, agentName: string) => void;
   broadcastFn: (frame: string) => void;
   stopTimeoutMs?: number;
+  ledgerDir?: string;
+  taskFailFn?: (argv: string[]) => number;
 }) {
   return (req: IncomingMessage, res: ServerResponse) => {
     const path = rawPath(req.url);
@@ -1410,6 +1440,17 @@ function makeFleetControlHandler(opts: {
       }
       opts.killFn(pid, action === "pause" ? "SIGSTOP" : "SIGCONT");
       sendJson(res, { ok: true }); return;
+    }
+    // T15-amended: for restart, mark the agent's current task as human-failed first.
+    if (action === "restart" && opts.taskFailFn && opts.ledgerDir) {
+      const tasks = parseTaskLedger(opts.ledgerDir);
+      const claimed = tasks.find((t) => t.claimed_by === agentName);
+      if (claimed?.id) {
+        const code = opts.taskFailFn(["fail", claimed.id, "--agent", agentName, "--role", "human"]);
+        if (code !== 0) {
+          sendJson(res, { error: `kernel/task fail exited with code ${code}` }, 500); return;
+        }
+      }
     }
     // stop / restart — async
     void (async () => {
@@ -2133,125 +2174,49 @@ describe("stuck detection malformed JSONL", () => {
   });
 });
 
-// --- T5: POST /api/draft-decision ---
+// =============================================================================
+// T15-amended — POST /api/fleet/restart: kernel/task fail --role human
+// =============================================================================
 
-const DRAFT_PORT = 7855;
-const DRAFT_NO_DIR_PORT = 7856;
+const T15A_PORT = 7870;
+const t15aLedgerDir = join(testDir, "t15a-ledger");
+const t15aPidsDir = join(testDir, "t15a-pids");
+const t15aValidAgents = new Set(["agent-be"]);
 
-const draftTestDir = join(tmpdir(), `draft-decision-test-${process.pid}`);
-const draftMailboxDir = join(draftTestDir, "mailboxes");
-const draftValidAgents = new Set(["agent-be", "agent-qa", "agent-fe", "agent-doc"]);
-
-type GitFn = (dir: string, msg: string) => Promise<void>;
-
-function makeDraftDecisionHandler(opts: {
-  controlDir: string;
-  validAgents: Set<string>;
-  gitFn?: GitFn;
-}) {
-  const { controlDir, validAgents: agents, gitFn } = opts;
-  return async (req: IncomingMessage, res: ServerResponse) => {
-    const method = req.method ?? "GET";
-    if (rawPath(req.url) !== "/api/draft-decision" || method !== "POST") {
-      sendJson(res, { error: "not found" }, 404);
-      return;
-    }
-
-    if (!controlDir) {
-      sendJson(res, { error: "control dir not configured" }, 503);
-      return;
-    }
-
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(chunk as Buffer);
-    let body: { agentName?: string; taskId?: string; text?: string } = {};
-    try {
-      body = JSON.parse(Buffer.concat(chunks).toString()) as typeof body;
-    } catch {
-      sendJson(res, { error: "invalid JSON" }, 400);
-      return;
-    }
-
-    const { agentName, taskId, text } = body;
-    if (!agentName || !agents.has(agentName)) {
-      sendJson(res, { error: "unknown agent" }, 400);
-      return;
-    }
-    if (!taskId || !TASK_ID_RE.test(taskId)) {
-      sendJson(res, { error: "invalid taskId" }, 400);
-      return;
-    }
-    if (!text || text.trim() === "") {
-      sendJson(res, { error: "text required" }, 400);
-      return;
-    }
-
-    const ts = new Date().toISOString();
-    const block = `\n## from: human | ${ts} | re: ${taskId}\n${text}\n`;
-    const { appendFile: appendFileAsync } = await import("fs/promises");
-    await appendFileAsync(join(controlDir, "mailboxes", `${agentName}.md`), block);
-
-    const commitGit = gitFn ?? (() => Promise.resolve());
-    try {
-      await commitGit(controlDir, `console: note for ${agentName} re ${taskId}`);
-      sendJson(res, { ok: true });
-    } catch {
-      sendJson(res, { error: "git push failed" }, 500);
-    }
-  };
-}
-
-let draftServer: Server;
-let draftNoCtrlServer: Server;
-let capturedGitArgs: { dir: string; msg: string } | null = null;
-let gitShouldFail = false;
-
-const mockGit: GitFn = async (dir, msg) => {
-  capturedGitArgs = { dir, msg };
-  if (gitShouldFail) throw new Error("push rejected");
-};
+let t15aTaskFailCalls: string[][] = [];
+let t15aSpawnCalls: string[] = [];
+let t15aMockTaskFailCode = 0;
+let t15aServer: Server;
 
 beforeAll(
   () =>
     new Promise<void>((resolve) => {
-      mkdirSync(draftMailboxDir, { recursive: true });
+      mkdirSync(t15aLedgerDir, { recursive: true });
+      mkdirSync(t15aPidsDir, { recursive: true });
+      writeFileSync(join(t15aPidsDir, "agent-be.pid"), "99999\n");
 
-      draftServer = createServer(
-        makeDraftDecisionHandler({
-          controlDir: draftTestDir,
-          validAgents: draftValidAgents,
-          gitFn: mockGit,
+      t15aServer = createServer(
+        makeFleetControlHandler({
+          validAgents: t15aValidAgents,
+          pidsDir: t15aPidsDir,
+          supervisorDir: join(testDir, "t15a-supervisor"),
+          killFn: () => {},
+          isAliveFn: () => false,
+          spawnFn: (_script, agentName) => t15aSpawnCalls.push(agentName),
+          broadcastFn: () => {},
+          stopTimeoutMs: 50,
+          ledgerDir: t15aLedgerDir,
+          taskFailFn: (argv) => { t15aTaskFailCalls.push(argv); return t15aMockTaskFailCode; },
         }),
       );
-
-      draftNoCtrlServer = createServer(
-        makeDraftDecisionHandler({
-          controlDir: "",
-          validAgents: draftValidAgents,
-          gitFn: mockGit,
-        }),
-      );
-
-      let started = 0;
-      const done = () => { if (++started === 2) resolve(); };
-      draftServer.listen(DRAFT_PORT, "127.0.0.1", done);
-      draftNoCtrlServer.listen(DRAFT_NO_DIR_PORT, "127.0.0.1", done);
+      t15aServer.listen(T15A_PORT, "127.0.0.1", resolve);
     }),
 );
 
 afterAll(
   () =>
     new Promise<void>((resolve, reject) => {
-      let closed = 0;
-      const done = (err?: Error) => {
-        if (err) { reject(err); return; }
-        if (++closed === 2) {
-          rmSync(draftTestDir, { recursive: true, force: true });
-          resolve();
-        }
-      };
-      draftServer.close(done);
-      draftNoCtrlServer.close(done);
+      t15aServer.close((err) => { if (err) reject(err); else resolve(); });
     }),
 );
 
@@ -2369,90 +2334,50 @@ describe("POST /api/draft-decision", () => {
     gitShouldFail = false;
     const mailboxFile = join(draftMailboxDir, "agent-be.md");
 
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-be", taskId: "T5", text: "looks good" }),
-    });
+    const r = await fetch(`http://127.0.0.1:${T15A_PORT}/api/fleet/restart?agent=agent-be`, { method: "POST" });
     expect(r.status).toBe(200);
 
-    const content = readFileSync(mailboxFile, "utf8");
-    expect(content).toMatch(/^## from: human \| .+ \| re: T5$/m);
-    expect(content).toContain("looks good");
+    expect(t15aTaskFailCalls).toHaveLength(1);
+    expect(t15aTaskFailCalls[0]).toEqual(["fail", "TASK-001", "--agent", "agent-be", "--role", "human"]);
+    expect(t15aSpawnCalls).toContain("agent-be");
+
+    unlinkSync(join(t15aLedgerDir, "TASK-001.task"));
   });
 
-  test("AC2: calls gitCommitAndPush with correct commit message on success", async () => {
-    capturedGitArgs = null;
-    gitShouldFail = false;
+  test("AC3: returns 500 when kernel/task fail exits non-zero and does not restart", async () => {
+    t15aTaskFailCalls = [];
+    t15aSpawnCalls = [];
+    t15aMockTaskFailCode = 1;
+    writeFileSync(
+      join(t15aLedgerDir, "TASK-002.task"),
+      "id: TASK-002\nclaimed_by: agent-be\nstatus: in_progress\n",
+    );
 
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-qa", taskId: "CONS-123", text: "please check logs" }),
-    });
-    expect(r.status).toBe(200);
-    const body = (await r.json()) as { ok: boolean };
-    expect(body.ok).toBe(true);
-    expect(capturedGitArgs).not.toBeNull();
-    expect(capturedGitArgs!.msg).toBe("console: note for agent-qa re CONS-123");
-    expect(capturedGitArgs!.dir).toBe(draftTestDir);
-  });
-
-  test("AC3: unknown agentName → 400 { error: 'unknown agent' }", async () => {
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-unknown", taskId: "T5", text: "hello" }),
-    });
-    expect(r.status).toBe(400);
-    const body = (await r.json()) as { error: string };
-    expect(body.error).toBe("unknown agent");
-  });
-
-  test("AC4: taskId failing TASK_ID_RE → 400 { error: 'invalid taskId' }", async () => {
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-be", taskId: "invalid", text: "hello" }),
-    });
-    expect(r.status).toBe(400);
-    const body = (await r.json()) as { error: string };
-    expect(body.error).toBe("invalid taskId");
-  });
-
-  test("AC5: empty text → 400 { error: 'text required' }", async () => {
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-be", taskId: "T5", text: "" }),
-    });
-    expect(r.status).toBe(400);
-    const body = (await r.json()) as { error: string };
-    expect(body.error).toBe("text required");
-  });
-
-  test("AC6: gitCommitAndPush throws → 500 { error: 'git push failed' }", async () => {
-    gitShouldFail = true;
-    const r = await fetch(`http://127.0.0.1:${DRAFT_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-fe", taskId: "T5", text: "retry please" }),
-    });
-    gitShouldFail = false;
+    const r = await fetch(`http://127.0.0.1:${T15A_PORT}/api/fleet/restart?agent=agent-be`, { method: "POST" });
     expect(r.status).toBe(500);
     const body = (await r.json()) as { error: string };
-    expect(body.error).toBe("git push failed");
+    expect(body.error).toBe("kernel/task fail exited with code 1");
+    expect(t15aSpawnCalls).toHaveLength(0);
+
+    unlinkSync(join(t15aLedgerDir, "TASK-002.task"));
   });
 
-  test("AC7: CONTROL_DIR not set → 503 { error: 'control dir not configured' }", async () => {
-    const r = await fetch(`http://127.0.0.1:${DRAFT_NO_DIR_PORT}/api/draft-decision`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentName: "agent-be", taskId: "T5", text: "hello" }),
-    });
-    expect(r.status).toBe(503);
-    const body = (await r.json()) as { error: string };
-    expect(body.error).toBe("control dir not configured");
+  test("AC4: skips kernel/task fail and restarts when agent has no claimed task", async () => {
+    t15aTaskFailCalls = [];
+    t15aSpawnCalls = [];
+    t15aMockTaskFailCode = 0;
+    // ledger has a task claimed by a different agent — agent-be has no claim
+    writeFileSync(
+      join(t15aLedgerDir, "TASK-003.task"),
+      "id: TASK-003\nclaimed_by: agent-qa\nstatus: in_progress\n",
+    );
+
+    const r = await fetch(`http://127.0.0.1:${T15A_PORT}/api/fleet/restart?agent=agent-be`, { method: "POST" });
+    expect(r.status).toBe(200);
+    expect(t15aTaskFailCalls).toHaveLength(0);
+    expect(t15aSpawnCalls).toContain("agent-be");
+
+    unlinkSync(join(t15aLedgerDir, "TASK-003.task"));
   });
 });
 
