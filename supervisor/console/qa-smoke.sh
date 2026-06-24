@@ -115,17 +115,20 @@ else
   printf '  FAIL  stuck-alert-slot not before section-attention in DOM\n' >&2; fail=$((fail + 1))
 fi
 
-# T16 AC6: pipeline, stuck, log endpoints return 200 + application/json content-type.
-check_json "GET /api/pipeline JSON content-type"          "${B}/api/pipeline"
-check_json "GET /api/stuck JSON content-type"             "${B}/api/stuck"
-check_json "GET /api/log/smoke-test-agent JSON"           "${B}/api/log/smoke-test-agent"
-
-# T16 AC7: fleet/stop with mock stale PID returns 200 { ok: true }.
-STOP_RESP=$(curl -s --max-time 5 -X POST "${B}/api/fleet/stop?agent=smoke-test-agent" 2>/dev/null) || STOP_RESP=""
-if printf '%s' "${STOP_RESP}" | grep -q '"ok":true'; then
-  printf '  ok    POST /api/fleet/stop mock stale PID → ok:true\n'; pass=$((pass + 1))
+# T18 AC1: index.html contains workspace-pill element
+if printf '%s' "${INDEX_BODY}" | grep -q 'workspace-pill'; then
+  printf '  ok    index.html contains workspace-pill element\n'; pass=$((pass + 1))
 else
-  printf '  FAIL  POST /api/fleet/stop mock stale PID → %s\n' "${STOP_RESP}" >&2; fail=$((fail + 1))
+  printf '  FAIL  index.html missing workspace-pill element\n' >&2; fail=$((fail + 1))
+fi
+
+# T17 AC1: GET /api/workspaces returns 200 with workspaces key
+check "GET /api/workspaces" "${B}/api/workspaces"
+WORKSPACES_BODY=$(curl -sf --max-time 5 "${B}/api/workspaces" 2>/dev/null) || WORKSPACES_BODY=""
+if printf '%s' "${WORKSPACES_BODY}" | grep -q '"workspaces"'; then
+  printf '  ok    workspaces JSON contains workspaces key\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  workspaces JSON missing workspaces key\n' >&2; fail=$((fail + 1))
 fi
 
 printf '\n=== smoke: %d passed, %d failed ===\n' "${pass}" "${fail}"

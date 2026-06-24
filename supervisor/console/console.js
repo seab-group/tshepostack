@@ -5,6 +5,7 @@ const FLEET_URL = '/api/fleet';
 const QUEUE_URL = '/api/queue';
 const PIPELINE_URL = '/api/pipeline';
 const STUCK_URL = '/api/stuck';
+const WORKSPACES_URL = '/api/workspaces';
 const RECONNECT_DELAY_MS = 3000;
 const FLEET_STALE_MS = 30000;
 const DOMAIN_FILTER_KEY = 'console-pipeline-domain-filter';
@@ -30,6 +31,9 @@ let approvalCount = 0;
 let pipelineData = [];
 let pipelineDomainFilter = localStorage.getItem(DOMAIN_FILTER_KEY) || 'all';
 let pipelineBootstrapped = false;
+
+/* T18: workspace state */
+let workspaceRegistry = { workspaces: [], activeId: null };
 
 /* T15: stuck agent state */
 const stuckAgents = new Map(); // agent → { agent, signal, detail, since }
@@ -385,6 +389,141 @@ function initRestartModal() {
       .finally(() => modal.close());
   });
 }
+
+/* ── Workspace switcher (T18) ── */
+
+async function fetchWorkspaces() {
+  try {
+    const res = await fetch(WORKSPACES_URL);
+    if (!res.ok) return;
+    workspaceRegistry = await res.json();
+    renderWorkspaces(workspaceRegistry);
+  } catch (_) {}
+}
+
+function truncate24(str) {
+  if (!str) return '';
+  return str.length > 24 ? str.slice(0, 24) + '…' : str;
+}
+
+function renderWorkspaces(reg) {
+  const pill = $('workspace-pill');
+  if (!pill) return;
+
+  const active = reg.workspaces.find((w) => w.id === reg.activeId);
+  pill.textContent = active ? truncate24(active.name) : 'No workspace';
+
+  const list = $('workspace-list');
+  if (!list) return;
+  list.innerHTML = '';
+
+  for (const ws of reg.workspaces) {
+    const item = document.createElement('button');
+    item.className = 'workspace-item' + (ws.id === reg.activeId ? ' workspace-item-active' : '');
+    item.type = 'button';
+    item.dataset.wsId = ws.id;
+    item.innerHTML = `
+      <span class="workspace-item-check" aria-hidden="true">${ws.id === reg.activeId ? '✓' : ''}</span>
+      <span class="workspace-item-name">${esc(truncate24(ws.name))}</span>
+    `;
+    item.addEventListener('click', () => {
+      if (ws.id !== reg.activeId) {
+        const switcher = $('workspace-switcher');
+        if (switcher) switcher.open = false;
+        activateWorkspace(ws.id);
+      }
+    });
+    list.appendChild(item);
+  }
+}
+
+function updateWorkspacePill(workspaceId, workspaceName) {
+  const pill = $('workspace-pill');
+  if (pill) pill.textContent = truncate24(workspaceName);
+
+  const list = $('workspace-list');
+  if (!list) return;
+  for (const item of list.querySelectorAll('.workspace-item')) {
+    const isActive = item.dataset.wsId === workspaceId;
+    item.classList.toggle('workspace-item-active', isActive);
+    const check = item.querySelector('.workspace-item-check');
+    if (check) check.textContent = isActive ? '✓' : '';
+  }
+  workspaceRegistry.activeId = workspaceId;
+}
+
+async function activateWorkspace(id) {
+  try {
+    await fetch(`${WORKSPACES_URL}/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+  } catch (_) {}
+}
+
+(function initWorkspaceSwitcher() {
+  const switcher = $('workspace-switcher');
+  const addBtn = $('workspace-add-btn');
+  const form = $('workspace-form');
+  const nameInput = $('workspace-name-input');
+  const dirInput = $('workspace-dir-input');
+  const errorEl = $('workspace-form-error');
+
+  if (!switcher) return;
+
+  document.addEventListener('click', (e) => {
+    if (!switcher.contains(e.target)) switcher.open = false;
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && switcher.open) switcher.open = false;
+  });
+
+  if (addBtn && form) {
+    addBtn.addEventListener('click', () => {
+      form.removeAttribute('hidden');
+      addBtn.setAttribute('hidden', '');
+      if (nameInput) nameInput.focus();
+    });
+  }
+
+  if (form) {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = nameInput ? nameInput.value.trim() : '';
+      const controlDir = dirInput ? dirInput.value.trim() : '';
+      if (!name || !controlDir) return;
+
+      if (errorEl) errorEl.style.display = 'none';
+
+      try {
+        const res = await fetch(WORKSPACES_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, controlDir }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (errorEl) {
+            errorEl.textContent = data.error || 'Failed to register workspace';
+            errorEl.style.display = '';
+          }
+          return;
+        }
+
+        const data = await res.json();
+        workspaceRegistry.workspaces.push(data.workspace);
+        renderWorkspaces(workspaceRegistry);
+
+        await activateWorkspace(data.workspace.id);
+
+        form.setAttribute('hidden', '');
+        if (addBtn) addBtn.removeAttribute('hidden');
+        if (nameInput) nameInput.value = '';
+        if (dirInput) dirInput.value = '';
+        if (errorEl) errorEl.style.display = 'none';
+      } catch (_) {}
+    });
+  }
+})();
 
 /* ── Pipeline ── */
 
@@ -827,6 +966,7 @@ function connect() {
     fetchQueue();
     fetchPipeline();
     fetchStuck();
+    fetchWorkspaces();
     pipelineBootstrapped = true;
   });
 
@@ -886,6 +1026,11 @@ function connect() {
 
   es.addEventListener('pipeline-update', () => {
     if (currentTab === 'pipeline') fetchPipeline();
+  });
+
+  es.addEventListener('workspace-switch', (e) => {
+    const ev = JSON.parse(e.data);
+    updateWorkspacePill(ev.workspaceId, ev.name);
   });
 
   es.addEventListener('error', () => {
