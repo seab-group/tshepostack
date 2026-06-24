@@ -2,19 +2,16 @@
 
 ## [Unreleased]
 
-### Trust ledger — auto-approve or block recurring commands without console prompts (T21)
+### Cost tracker cache — dedicated verify describe blocks lock in the cache contract (T19-amended)
 
-Directors no longer need to click Approve every time an agent runs `bun test` or `git status`. The trust ledger lets you register a pattern once — the bash wrapper checks `~/.gstack-console/trust.json` using `python3` before writing any decision request file, so matching commands execute (or are blocked) immediately. Three new REST endpoints manage the ledger from the console or any HTTP client.
+Four new describe blocks in `server.test.ts` tighten the test coverage on T19's cache implementation. Each block isolates one cache behavior — the `cachedAt` field, the 30-second TTL, workspace-switch invalidation, and the `?since=` cache bypass — so a future regression in any of these four invariants fails one clearly-named test rather than a general aggregation test.
 
 #### Added
-- `GET /api/trust` in `server.ts` — returns `{ rules: TrustRule[] }` from `~/.gstack-console/trust.json`; missing file returns `{ rules: [] }`, never 404 (T21 AC1).
-- `POST /api/trust` in `server.ts` — validates `agent` against `validAgents`, `pattern` as a non-empty string, `action` as `"approve"` or `"reject"`; appends the new rule via read-modify-write and returns `{ rule: TrustRule }` (T21 AC2).
-- `DELETE /api/trust/:id` in `server.ts` — removes the matching rule and responds 204; returns 404 if the id is not found (T21 AC3).
-- Trust check in `bin/bash` — before writing a decision request file, reads `trust.json` with `python3 -c '...'` and checks for a matching `agent` + substring `pattern`; `approve` → `exec "$REAL_BASH"` (no request file); `reject` → `exit 1`; missing file or malformed JSON → falls through to normal decision flow (T21 AC4/AC5/AC6).
-- `TrustRule` type `{ id, agent, pattern, action, createdAt }` and `TrustLedger` type `{ rules: TrustRule[] }` exported from `server-utils.ts`.
-- `readTrustLedger(path)` and `writeTrustLedger(path, ledger)` in `server-utils.ts` — read returns `{ rules: [] }` on any error; write does mkdir-p + `JSON.stringify` with 2-space indent.
-- `defaultTrustPath()` in `server-utils.ts` — resolves to `~/.gstack-console/trust.json`.
-- 8 new tests in `server.test.ts` across 3 describe blocks covering AC1–AC3 — `makeTrustHandler` factory, `T21_PORT = 7890`. 4 new bash subtests in `bash-wrapper.test.sh` covering AC4/AC5/AC6a/AC6b. Total test suite: 152 (2 bash-wrapper + 150 server).
+- `describe("cost cache cachedAt")` — asserts `GET /api/cost` response carries `cachedAt` as a valid ISO 8601 string (round-trips through `new Date().toISOString()`) (T19-amended AC1). Port 7890 (shared cost server).
+- `describe("cost cache TTL")` — uses an injectable `computeFn` spy; calls `GET /api/cost` twice within 1 second; asserts spy invoked exactly once (cache hit on the second call) (T19-amended AC2). Port 7894.
+- `describe("cost cache workspace switch")` — pre-populates cache for `sw-ws1` with a 60s TTL; fires `POST /api/workspaces/sw-ws2/activate`; asserts `cache.has("sw-ws1")` is false (T19-amended AC3). Port 7895.
+- `describe("cost cache bypass since")` — calls `GET /api/cost?since=…` twice; asserts spy called twice and `localCache.size === 0` (since path never writes to cache) (T19-amended AC4/AC5). Port 7896.
+- Total test suite: 148 (2 bash-wrapper + 146 server).
 
 ### Cost tracker — see real token usage and cost per agent in the Cost tab (T19)
 
