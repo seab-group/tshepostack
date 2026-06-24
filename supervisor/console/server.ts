@@ -468,7 +468,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   // T14: GET /api/stuck — compute stuck signals + edge-triggered SSE broadcast.
   if (path === "/api/stuck" && method === "GET") {
     const stuckAgents = computeStuckSignals(
-      agentList,
+      [...validAgents],
       join(homedir(), "agents"),
       controlDir ? join(controlDir, "ledger") : "",
     );
