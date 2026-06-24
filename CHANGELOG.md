@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Cost tracker — see real token usage and cost per agent in the Cost tab (T19)
+
+The Cost tab now shows real data. Each agent writes token usage to its `live-events.jsonl` as it runs; `GET /api/cost` reads those files and returns per-agent and grand-total `tokens_in`, `tokens_out`, and `cost_usd`. A 30-second workspace-keyed cache keeps repeated tab switches from re-scanning all JSONL files. Switching workspaces evicts the outgoing workspace's cache entry immediately. A `?since=ISO` query returns a filtered, always-fresh response for time-windowed cost views.
+
+#### Added
+- `GET /api/cost` endpoint in `server.ts` — reads each agent's `live-events.jsonl`, sums `tokens_in`, `tokens_out`, and `cost_usd`; only includes agents with at least one event carrying a numeric `cost_usd` (T19 AC1).
+- `COST_CACHE_TTL_MS = 30_000` and `costCache: Map<wsId, { data: CostResponse; expiresAt: number }>` in `server.ts` — workspace-keyed 30-second in-memory cache; cache miss triggers `computeCostData`; hit returns the stored response without re-reading JSONL (T19 AC2).
+- `costCache.delete(reg.activeId)` in `POST /api/workspaces/:id/activate` — invalidates the outgoing workspace's cost cache before the workspace switch completes (T19 AC3).
+- `?since=ISO` query support — when present, `computeCostData` filters to events with `ts >= since` and always computes fresh (bypasses cache) (T19 AC5).
+- `computeCostData(agents, agentsHome, sinceIso?)` in `server-utils.ts` — per-line try/catch (same pattern as T14-amended); skips events without `cost_usd` or with non-numeric `cost_usd`; rounds per-agent and total `cost_usd` to 4 decimal places (T19 AC4).
+- `CostAgentRow` and `CostResponse` types exported from `server-utils.ts` (T19 AC1).
+- 7 new tests in `server.test.ts` across 6 describe blocks covering AC1–AC6 — ports 7890 (shared), 7891 (AC3), 7892 (AC2), 7893 (AC6). `makeWorkspacesHandler` extended with optional `costInvalidateFn`. Total test suite: 144 (2 bash-wrapper + 142 server).
+
 ### Workspace switcher UI — switch ECOBA engagements from the console header (T18)
 
 Directors can now switch the active workspace without leaving the Fleet Console. A compact pill in the page header shows the current workspace name and opens a dropdown on click. From the dropdown you can switch to any registered workspace or register a new one by entering a name and its control-repo path — the server activates it and the pill updates instantly over SSE, with no page reload.
