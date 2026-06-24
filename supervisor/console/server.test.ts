@@ -1380,6 +1380,8 @@ function makeFleetControlHandler(opts: {
   spawnFn: (script: string, agentName: string) => void;
   broadcastFn: (frame: string) => void;
   stopTimeoutMs?: number;
+  ledgerDir?: string;
+  taskFailFn?: (argv: string[]) => number;
 }) {
   return (req: IncomingMessage, res: ServerResponse) => {
     const path = rawPath(req.url);
@@ -1408,6 +1410,17 @@ function makeFleetControlHandler(opts: {
       }
       opts.killFn(pid, action === "pause" ? "SIGSTOP" : "SIGCONT");
       sendJson(res, { ok: true }); return;
+    }
+    // T15-amended: for restart, mark the agent's current task as human-failed first.
+    if (action === "restart" && opts.taskFailFn && opts.ledgerDir) {
+      const tasks = parseTaskLedger(opts.ledgerDir);
+      const claimed = tasks.find((t) => t.claimed_by === agentName);
+      if (claimed?.id) {
+        const code = opts.taskFailFn(["fail", claimed.id, "--agent", agentName, "--role", "human"]);
+        if (code !== 0) {
+          sendJson(res, { error: `kernel/task fail exited with code ${code}` }, 500); return;
+        }
+      }
     }
     // stop / restart — async
     void (async () => {
@@ -2128,5 +2141,108 @@ describe("stuck detection malformed JSONL", () => {
     expect(r.status).toBe(200);
     const body = (await r.json()) as { stuck: StuckAgent[] };
     expect(body.stuck).toHaveLength(0);
+  });
+});
+
+// =============================================================================
+// T15-amended — POST /api/fleet/restart: kernel/task fail --role human
+// =============================================================================
+
+const T15A_PORT = 7870;
+const t15aLedgerDir = join(testDir, "t15a-ledger");
+const t15aPidsDir = join(testDir, "t15a-pids");
+const t15aValidAgents = new Set(["agent-be"]);
+
+let t15aTaskFailCalls: string[][] = [];
+let t15aSpawnCalls: string[] = [];
+let t15aMockTaskFailCode = 0;
+let t15aServer: Server;
+
+beforeAll(
+  () =>
+    new Promise<void>((resolve) => {
+      mkdirSync(t15aLedgerDir, { recursive: true });
+      mkdirSync(t15aPidsDir, { recursive: true });
+      writeFileSync(join(t15aPidsDir, "agent-be.pid"), "99999\n");
+
+      t15aServer = createServer(
+        makeFleetControlHandler({
+          validAgents: t15aValidAgents,
+          pidsDir: t15aPidsDir,
+          supervisorDir: join(testDir, "t15a-supervisor"),
+          killFn: () => {},
+          isAliveFn: () => false,
+          spawnFn: (_script, agentName) => t15aSpawnCalls.push(agentName),
+          broadcastFn: () => {},
+          stopTimeoutMs: 50,
+          ledgerDir: t15aLedgerDir,
+          taskFailFn: (argv) => { t15aTaskFailCalls.push(argv); return t15aMockTaskFailCode; },
+        }),
+      );
+      t15aServer.listen(T15A_PORT, "127.0.0.1", resolve);
+    }),
+);
+
+afterAll(
+  () =>
+    new Promise<void>((resolve, reject) => {
+      t15aServer.close((err) => { if (err) reject(err); else resolve(); });
+    }),
+);
+
+describe("fleet/restart role human (T15-amended)", () => {
+  test("AC1/AC5: calls kernel/task fail with --role human argv when agent has a claimed task", async () => {
+    t15aTaskFailCalls = [];
+    t15aSpawnCalls = [];
+    t15aMockTaskFailCode = 0;
+    writeFileSync(
+      join(t15aLedgerDir, "TASK-001.task"),
+      "id: TASK-001\nclaimed_by: agent-be\nstatus: in_progress\n",
+    );
+
+    const r = await fetch(`http://127.0.0.1:${T15A_PORT}/api/fleet/restart?agent=agent-be`, { method: "POST" });
+    expect(r.status).toBe(200);
+
+    expect(t15aTaskFailCalls).toHaveLength(1);
+    expect(t15aTaskFailCalls[0]).toEqual(["fail", "TASK-001", "--agent", "agent-be", "--role", "human"]);
+    expect(t15aSpawnCalls).toContain("agent-be");
+
+    unlinkSync(join(t15aLedgerDir, "TASK-001.task"));
+  });
+
+  test("AC3: returns 500 when kernel/task fail exits non-zero and does not restart", async () => {
+    t15aTaskFailCalls = [];
+    t15aSpawnCalls = [];
+    t15aMockTaskFailCode = 1;
+    writeFileSync(
+      join(t15aLedgerDir, "TASK-002.task"),
+      "id: TASK-002\nclaimed_by: agent-be\nstatus: in_progress\n",
+    );
+
+    const r = await fetch(`http://127.0.0.1:${T15A_PORT}/api/fleet/restart?agent=agent-be`, { method: "POST" });
+    expect(r.status).toBe(500);
+    const body = (await r.json()) as { error: string };
+    expect(body.error).toBe("kernel/task fail exited with code 1");
+    expect(t15aSpawnCalls).toHaveLength(0);
+
+    unlinkSync(join(t15aLedgerDir, "TASK-002.task"));
+  });
+
+  test("AC4: skips kernel/task fail and restarts when agent has no claimed task", async () => {
+    t15aTaskFailCalls = [];
+    t15aSpawnCalls = [];
+    t15aMockTaskFailCode = 0;
+    // ledger has a task claimed by a different agent — agent-be has no claim
+    writeFileSync(
+      join(t15aLedgerDir, "TASK-003.task"),
+      "id: TASK-003\nclaimed_by: agent-qa\nstatus: in_progress\n",
+    );
+
+    const r = await fetch(`http://127.0.0.1:${T15A_PORT}/api/fleet/restart?agent=agent-be`, { method: "POST" });
+    expect(r.status).toBe(200);
+    expect(t15aTaskFailCalls).toHaveLength(0);
+    expect(t15aSpawnCalls).toContain("agent-be");
+
+    unlinkSync(join(t15aLedgerDir, "TASK-003.task"));
   });
 });
