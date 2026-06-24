@@ -182,19 +182,30 @@ cmd_stop() {
       continue
     fi
 
+    # Kill every run-agent.sh process for this agent — handles duplicates from
+    # agents started in multiple terminals outside fleet.sh (not just .pids/).
+    local extra_pids
+    extra_pids=$(pgrep -f "run-agent.sh ${name} " 2>/dev/null || true)
     local pid_file="$PID_DIR/$name.pid"
-    if [ -f "$pid_file" ]; then
-      local pid; pid=$(cat "$pid_file")
-      if kill -0 "$pid" 2>/dev/null; then
-        # SIGTERM the supervisor; it will propagate to child claude processes via trap
-        kill "$pid" 2>/dev/null && echo "[$name] stopped (PID $pid)" || echo "[$name] failed to stop"
-      else
-        echo "[$name] not running (stale PID $pid)"
-      fi
-      rm -f "$pid_file"
+    local tracked_pid=""
+    [ -f "$pid_file" ] && tracked_pid=$(cat "$pid_file")
+
+    local all_pids
+    all_pids=$(printf '%s\n' $tracked_pid $extra_pids | sort -u | xargs)
+
+    if [ -n "$all_pids" ]; then
+      local killed=0
+      for pid in $all_pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+          kill "$pid" 2>/dev/null && killed=$((killed + 1))
+        fi
+      done
+      local count; count=$(echo "$all_pids" | wc -w | tr -d ' ')
+      echo "[$name] stopped ($killed/$count processes killed)"
     else
       echo "[$name] not running"
     fi
+    rm -f "$pid_file"
   done
 }
 
