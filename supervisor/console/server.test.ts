@@ -28,6 +28,7 @@ import {
   readPidFile,
   stopProcess,
   computeStuckSignals,
+  readAndValidatePostBody,
   type AgentStatus,
   type GitSpawner,
   type ApprovalItem,
@@ -76,7 +77,31 @@ function makeHandler(rootDir: string, fleetHome?: string, testDecisionsDir?: str
         sendJson(res, { error: "unknown agent" }, 400);
         return;
       }
-      sendJson(res, { ok: true });
+      void (async () => {
+        const v = await readAndValidatePostBody(req);
+        if (!v.ok) { sendJson(res, { error: v.error }, v.statusCode); return; }
+        sendJson(res, { ok: true });
+      })();
+      return;
+    }
+
+    // POST /api/approve — validate JSON body and Content-Type (T9 AC1 + AC2).
+    if (path === "/api/approve" && method === "POST") {
+      void (async () => {
+        const v = await readAndValidatePostBody(req);
+        if (!v.ok) { sendJson(res, { error: v.error }, v.statusCode); return; }
+        sendJson(res, { ok: true });
+      })();
+      return;
+    }
+
+    // POST /api/draft-decision — validate JSON body and Content-Type (T9 AC1 + AC2).
+    if (path === "/api/draft-decision" && method === "POST") {
+      void (async () => {
+        const v = await readAndValidatePostBody(req);
+        if (!v.ok) { sendJson(res, { error: v.error }, v.statusCode); return; }
+        sendJson(res, { ok: true });
+      })();
       return;
     }
 
@@ -295,10 +320,14 @@ describe("POST /api/mailbox/:agentName", () => {
     expect(r.status).toBe(400);
   });
 
-  test("accepts a known agent name", async () => {
+  test("accepts a known agent name with valid JSON body", async () => {
     const r = await fetch(
       `http://127.0.0.1:${TEST_PORT}/api/mailbox/agent-be`,
-      { method: "POST", body: "test message" },
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note: "test message" }),
+      },
     );
     expect(r.status).toBe(200);
   });
