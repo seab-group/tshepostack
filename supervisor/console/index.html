@@ -28,7 +28,7 @@
   </div>
   <nav role="tablist" class="tab-nav" aria-label="Console views">
     <button role="tab" id="tab-fleet" class="tab-btn" aria-selected="true" aria-controls="section-fleet">Fleet</button>
-    <button role="tab" id="tab-queue" class="tab-btn" aria-selected="false" aria-controls="section-attention section-approval">Queue</button>
+    <button role="tab" id="tab-queue" class="tab-btn" aria-selected="false" aria-controls="section-attention section-approval section-trust">Queue</button>
     <button role="tab" id="tab-pipeline" class="tab-btn" aria-selected="false" aria-controls="section-pipeline">Pipeline</button>
     <button role="tab" id="tab-cost" class="tab-btn" aria-selected="false" aria-controls="section-cost">Cost</button>
   </nav>
@@ -106,6 +106,40 @@
       <div class="empty-title">No pending approvals</div>
       <div class="empty-sub">Agents are running autonomously. Risky actions will appear here for your sign-off.</div>
     </div>
+  </section>
+
+  <!-- ── Trust Rules ── hidden while Fleet tab is active or when 0 rules and no form open (AC4) -->
+  <section aria-label="Trust Rules" id="section-trust" hidden>
+    <div class="section-header">
+      <span class="section-title">Trust rules</span>
+      <div class="section-divider"></div>
+    </div>
+
+    <!-- Rules injected here by console.js -->
+    <div id="trust-rules"></div>
+
+    <!-- Inline add-rule form (AC3) — hidden until Add rule is clicked -->
+    <div id="trust-add-form" class="trust-add-form" hidden>
+      <div class="trust-form-row">
+        <label class="trust-form-label" for="trust-agent-select">Agent</label>
+        <select id="trust-agent-select" class="trust-form-select"></select>
+      </div>
+      <div class="trust-form-row">
+        <label class="trust-form-label" for="trust-pattern-input">Pattern</label>
+        <input id="trust-pattern-input" class="trust-form-input" type="text" placeholder="e.g. git push">
+      </div>
+      <div class="trust-form-row">
+        <span class="trust-form-label">Action</span>
+        <label class="trust-radio-label"><input type="radio" name="trust-action" value="approve" checked> Approve</label>
+        <label class="trust-radio-label"><input type="radio" name="trust-action" value="reject"> Reject</label>
+      </div>
+      <div class="trust-form-btns">
+        <button id="trust-form-cancel" class="btn-trust-secondary">Cancel</button>
+        <button id="trust-form-save" class="btn-trust-save">Save</button>
+      </div>
+    </div>
+
+    <button id="trust-add-btn" class="btn-add-rule">Add rule</button>
   </section>
 
   <!-- All-clear banner — shown by syncState() only when Queue tab is active and both queues empty -->

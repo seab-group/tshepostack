@@ -9,6 +9,8 @@ const RECONNECT_DELAY_MS = 3000;
 const FLEET_STALE_MS = 30000;
 const DOMAIN_FILTER_KEY = 'console-pipeline-domain-filter';
 
+const TRUST_URL = '/api/trust';
+
 const $ = (id) => document.getElementById(id);
 
 const attentionCards = $('attention-cards');
@@ -21,6 +23,14 @@ const sseDot = $('sse-dot');
 const sseLabel = $('sse-label');
 const attentionBadge = $('attention-badge');
 const approvalBadge = $('approval-badge');
+
+const sectionTrust = $('section-trust');
+const trustRulesEl = $('trust-rules');
+const trustAddForm = $('trust-add-form');
+const trustAddBtn = $('trust-add-btn');
+
+let trustRules = [];
+let trustFormOpen = false;
 
 let es = null;
 let sseConnected = false;
@@ -73,9 +83,11 @@ function switchTab(name) {
   if (name === 'queue') {
     sectionAttention.removeAttribute('hidden');
     sectionApproval.removeAttribute('hidden');
+    /* Trust section: visibility controlled by syncTrustState() after fetchTrust() */
   } else {
     sectionAttention.setAttribute('hidden', '');
     sectionApproval.setAttribute('hidden', '');
+    sectionTrust.setAttribute('hidden', '');
   }
 
   /* Pipeline panel */
@@ -105,6 +117,7 @@ function switchTab(name) {
 
   if (name === 'queue') {
     fetchQueue();
+    fetchTrust();
   }
 
   syncState();
@@ -551,6 +564,133 @@ async function openSpecPanel(taskId) {
     btn.addEventListener('click', () => panel.setAttribute('hidden', ''));
   }
 })();
+
+/* ── Trust rules (T22 AC1–AC5) ── */
+
+async function fetchTrust() {
+  try {
+    const res = await fetch(TRUST_URL);
+    if (!res.ok) return;
+    const data = await res.json();
+    trustRules = data.rules || [];
+    renderTrustRules();
+  } catch (_) {}
+}
+
+function syncTrustState() {
+  /* AC4: show Trust section only when rules exist or add form is open */
+  if (trustRules.length > 0 || trustFormOpen) {
+    sectionTrust.removeAttribute('hidden');
+  } else {
+    sectionTrust.setAttribute('hidden', '');
+  }
+}
+
+function renderTrustRules() {
+  trustRulesEl.innerHTML = '';
+  for (const rule of trustRules) {
+    trustRulesEl.appendChild(buildTrustRuleRow(rule));
+  }
+  syncTrustState();
+}
+
+function buildTrustRuleRow(rule) {
+  const row = document.createElement('div');
+  row.className = 'trust-rule-row card-new';
+  row.dataset.ruleId = rule.id;
+  const actionClass = rule.action === 'approve' ? 'trust-action-approve' : 'trust-action-reject';
+  const actionLabel = rule.action === 'approve' ? 'auto-approve' : 'auto-reject';
+  row.innerHTML = `
+    <span class="trust-rule-agent">${esc(rule.agent)}</span>
+    <span class="trust-rule-pattern">${esc(rule.pattern)}</span>
+    <span class="trust-rule-action ${actionClass}">${esc(actionLabel)}</span>
+    <button class="btn-trust-revoke" aria-label="Revoke trust rule for ${esc(rule.agent)}: ${esc(rule.pattern)}">Revoke</button>
+  `;
+  row.querySelector('.btn-trust-revoke').addEventListener('click', () => {
+    /* AC2: DELETE /api/trust/{id} (path param) + 300ms fade-out */
+    fetch(`/api/trust/${encodeURIComponent(rule.id)}`, { method: 'DELETE' }).catch(() => {});
+    trustRules = trustRules.filter((r) => r.id !== rule.id);
+    exitCard(row, () => syncTrustState());
+  });
+  return row;
+}
+
+/* AC3: populate agent select from GET /api/fleet */
+async function populateTrustAgentSelect() {
+  const sel = $('trust-agent-select');
+  if (!sel) return;
+  sel.innerHTML = '';
+  try {
+    const res = await fetch(FLEET_URL);
+    if (res.ok) {
+      const agents = await res.json();
+      for (const a of (agents || [])) {
+        const opt = document.createElement('option');
+        opt.value = a.name;
+        opt.textContent = a.name;
+        sel.appendChild(opt);
+      }
+    }
+  } catch (_) {}
+}
+
+/* AC3: Add rule button — show form */
+if (trustAddBtn) {
+  trustAddBtn.addEventListener('click', () => {
+    trustFormOpen = true;
+    trustAddForm.removeAttribute('hidden');
+    trustAddBtn.setAttribute('hidden', '');
+    syncTrustState();
+    populateTrustAgentSelect();
+    const inp = $('trust-pattern-input');
+    if (inp) inp.focus();
+  });
+}
+
+/* AC3: Cancel button */
+if ($('trust-form-cancel')) {
+  $('trust-form-cancel').addEventListener('click', () => {
+    trustFormOpen = false;
+    trustAddForm.setAttribute('hidden', '');
+    trustAddBtn.removeAttribute('hidden');
+    const inp = $('trust-pattern-input');
+    if (inp) inp.value = '';
+    syncTrustState();
+  });
+}
+
+/* AC3: Save button — POST /api/trust; add rule to list without page reload */
+if ($('trust-form-save')) {
+  $('trust-form-save').addEventListener('click', async () => {
+    const sel = $('trust-agent-select');
+    const inp = $('trust-pattern-input');
+    const actionEl = document.querySelector('input[name="trust-action"]:checked');
+    if (!sel || !inp || !actionEl) return;
+    const agent = sel.value;
+    const pattern = inp.value.trim();
+    const action = actionEl.value;
+    if (!agent || !pattern) { if (inp) inp.focus(); return; }
+    try {
+      const res = await fetch(TRUST_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent, pattern, action }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.rule) {
+          trustRules.push(data.rule);
+          trustRulesEl.appendChild(buildTrustRuleRow(data.rule));
+        }
+        trustFormOpen = false;
+        trustAddForm.setAttribute('hidden', '');
+        trustAddBtn.removeAttribute('hidden');
+        inp.value = '';
+        syncTrustState();
+      }
+    } catch (_) {}
+  });
+}
 
 /* ── State sync ── */
 

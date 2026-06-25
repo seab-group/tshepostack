@@ -20,6 +20,7 @@ import {
   readFleetStatus,
   makeWatchHandler,
   makeLedgerWatchHandler,
+  makeDecisionsWatchHandler,
   gitCommitAndPush,
   resolvePort,
   readApprovals,
@@ -34,6 +35,9 @@ import {
   readWorkspaceRegistry,
   writeWorkspaceRegistry,
   bootstrapWorkspace,
+  readTrustLedger,
+  writeTrustLedger,
+  defaultTrustPath,
   type CostAgentRow,
   type CostResponse,
   type AgentStatus,
@@ -2872,6 +2876,70 @@ describe("DELETE /api/trust/:id (AC3)", () => {
   });
 });
 
+// --- T22 AC8: makeDecisionsWatchHandler ---
+
+describe("makeDecisionsWatchHandler (AC8)", () => {
+  const watchDecisionsDir = join(testDir, "watch-decisions-t22");
+
+  beforeAll(() => {
+    mkdirSync(watchDecisionsDir, { recursive: true });
+  });
+
+  test("does NOT broadcast for .decision.json with auto:true (AC8)", () => {
+    const frames: string[] = [];
+    const handler = makeDecisionsWatchHandler(watchDecisionsDir, (f) => frames.push(f));
+    writeFileSync(
+      join(watchDecisionsDir, "test_agent-t22-auto.decision.json"),
+      JSON.stringify({ approved: true, auto: true }),
+    );
+    handler("change", "test_agent-t22-auto.decision.json");
+    expect(frames).toHaveLength(0);
+  });
+
+  test("does NOT broadcast for .decision.json without auto:true (human-written response)", () => {
+    const frames: string[] = [];
+    const handler = makeDecisionsWatchHandler(watchDecisionsDir, (f) => frames.push(f));
+    writeFileSync(
+      join(watchDecisionsDir, "test_agent-t22-human.decision.json"),
+      JSON.stringify({ approved: true }),
+    );
+    handler("change", "test_agent-t22-human.decision.json");
+    expect(frames).toHaveLength(0);
+  });
+
+  test("broadcasts approval SSE for a request .json file (AC8)", () => {
+    const frames: string[] = [];
+    const handler = makeDecisionsWatchHandler(watchDecisionsDir, (f) => frames.push(f));
+    const reqData = { agent: "test_agent", command: "git push origin main", risk: "high", request_id: "t22-req-1" };
+    writeFileSync(
+      join(watchDecisionsDir, "test_agent-t22-req-1.json"),
+      JSON.stringify(reqData),
+    );
+    handler("change", "test_agent-t22-req-1.json");
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toContain("event: approval");
+    const dataLine = frames[0].split("\n").find((l) => l.startsWith("data: "));
+    const payload = JSON.parse(dataLine!.slice("data: ".length)) as Record<string, unknown>;
+    expect(payload.command).toBe("git push origin main");
+  });
+
+  test("does not broadcast for non-.json filenames", () => {
+    const frames: string[] = [];
+    const handler = makeDecisionsWatchHandler(watchDecisionsDir, (f) => frames.push(f));
+    handler("change", "README.md");
+    handler("change", null);
+    handler("change", "some.txt");
+    expect(frames).toHaveLength(0);
+  });
+
+  test("does not broadcast for unreadable .json file", () => {
+    const frames: string[] = [];
+    const handler = makeDecisionsWatchHandler(watchDecisionsDir, (f) => frames.push(f));
+    handler("change", "ghost-file-that-does-not-exist.json");
+    expect(frames).toHaveLength(0);
+  });
+});
+
 // T19: Cost tracker tests
 // makeCostHandler: injects computeFn and workspaceId for cache tests.
 function makeCostHandler(opts: {
@@ -2911,7 +2979,7 @@ function makeCostHandler(opts: {
   };
 }
 
-const COST_PORT = 7890;
+const COST_PORT = 7899;
 const COST_AC3_PORT = 7891;
 
 const costTestDir = join(tmpdir(), `console-cost-test-${process.pid}`);
