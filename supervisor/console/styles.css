@@ -1347,7 +1347,7 @@ body::after {
 }
 .btn-trust-revoke:hover { border-color: var(--red); color: var(--red); }
 
-.trust-add-form {
+.trust-add-form:not([hidden]) {
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
