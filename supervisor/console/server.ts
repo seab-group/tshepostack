@@ -621,9 +621,10 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     return;
   }
 
-  // T21: DELETE /api/trust/:id — remove rule by id; 204 on success, 404 if not found.
+  // T21/T22-amended: DELETE /api/trust/:id — path param; 204 on success, 404 if not found, 400 on malformed id.
   if (path.startsWith("/api/trust/") && method === "DELETE") {
-    const ruleId = path.slice("/api/trust/".length).split("/")[0];
+    const ruleId = path.split('/').at(-1);
+    if (!ruleId || !/^[a-f0-9-]{36}$/.test(ruleId)) { sendJson(res, { error: "bad request" }, 400); return; }
     const trustPath = defaultTrustPath();
     const ledger = readTrustLedger(trustPath);
     const idx = ledger.rules.findIndex((r) => r.id === ruleId);
