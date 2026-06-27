@@ -15,3 +15,14 @@ Object.defineProperty(globalThis, 'Text', { value: dom.window.Text, writable: tr
 Object.defineProperty(globalThis, 'Comment', { value: dom.window.Comment, writable: true })
 Object.defineProperty(globalThis, 'DocumentFragment', { value: dom.window.DocumentFragment, writable: true })
 Object.defineProperty(globalThis, 'MutationObserver', { value: dom.window.MutationObserver, writable: true })
+Object.defineProperty(globalThis, 'localStorage', { value: dom.window.localStorage, writable: true })
+
+const defaultMq = (_query: string) => ({
+  matches: false,
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  addListener: () => {},
+  removeListener: () => {},
+})
+Object.defineProperty(globalThis, 'matchMedia', { value: defaultMq, writable: true, configurable: true })
+Object.defineProperty(dom.window, 'matchMedia', { value: defaultMq, writable: true, configurable: true })

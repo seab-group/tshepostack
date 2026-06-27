@@ -1,12 +1,12 @@
 @theme {
-  /* Colour palette — extended from supervisor/console/styles.css */
-  --color-base: #0C0C0C;
-  --color-surface: #141414;
-  --color-surface-2: #1C1C1C;
-  --color-border: #262626;
-  --color-text: #FAFAFA;
-  --color-text-dim: #A1A1AA;
-  --color-text-micro: #52525B;
+  /* Colour palette — light-mode defaults */
+  --color-base: #ffffff;
+  --color-surface: #f8fafc;
+  --color-surface-2: #f1f5f9;
+  --color-border: #e2e8f0;
+  --color-text: #0f172a;
+  --color-text-dim: #64748b;
+  --color-text-micro: #94a3b8;
   --color-amber: #F59E0B;
   --color-amber-dim: #FBBF24;
   --color-green: #22C55E;
@@ -37,4 +37,20 @@
   --duration-micro: 75ms;
   --duration-short: 150ms;
   --duration-medium: 250ms;
+}
+
+/* Dark-mode colour overrides — applied when <html class="dark"> */
+.dark {
+  --color-base: #0f172a;
+  --color-surface: #1e293b;
+  --color-surface-2: #334155;
+  --color-border: #475569;
+  --color-text: #f8fafc;
+  --color-text-dim: #94a3b8;
+  --color-text-micro: #64748b;
+  --color-amber: #fbbf24;
+  --color-amber-dim: #fde68a;
+  --color-green: #4ade80;
+  --color-red: #f87171;
+  --color-blue: #60a5fa;
 }
