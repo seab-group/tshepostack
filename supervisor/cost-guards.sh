@@ -34,6 +34,25 @@ should_skip_idle_session() {
     return 1
   fi
 
+  # v9 cross-agent rate-limit marker. Any agent that hits the upstream
+  # session/usage limit writes the reset epoch to this file. Every other
+  # agent then skips its claude call until the marker expires — one agent
+  # taking the hit prevents the whole fleet from hammering the wall.
+  local marker="${RATE_LIMIT_MARKER:-$HOME/.cstack-rate-limited-until}"
+  if [ -f "$marker" ]; then
+    local until_epoch
+    until_epoch=$(cat "$marker" 2>/dev/null | tr -d '[:space:]')
+    local now
+    now=$(date +%s)
+    if [ -n "$until_epoch" ] && [ "$until_epoch" -gt "$now" ] 2>/dev/null; then
+      return 0   # fleet-wide skip until rate-limit window resets
+    fi
+    # Marker is stale — clean it up so we don't recheck on every iteration.
+    if [ -n "$until_epoch" ] && [ "$until_epoch" -le "$now" ] 2>/dev/null; then
+      rm -f "$marker" 2>/dev/null || true
+    fi
+  fi
+
   # Mailbox: skip only if missing or already cleared (no '## from:' header).
   local mbox="$control_dir/mailboxes/$agent_name.md"
   if [ -f "$mbox" ] && grep -q '^## from:' "$mbox" 2>/dev/null; then
@@ -43,10 +62,15 @@ should_skip_idle_session() {
   # Eligibility: ask the kernel directly. Exit 3 = NO_ELIGIBLE_TASKS.
   # Any other exit (including 0 = work available, 1 = error) → don't skip.
   local domain="${AGENT_DOMAIN:-}"
-  local repo="${WORK_REPO_NAME:-}"
   local -a args=( eligible --role "$role" )
   [ -n "$domain" ] && args+=( --domain "$domain" )
-  [ -n "$repo" ]   && args+=( --repo   "$repo" )
+  # Doc agents skip the --repo filter: their WORK_REPO is the docs destination
+  # while task `repo` fields reference the code repo being documented (different
+  # repos). Feature/qa agents share the same repo for both, so filter applies.
+  if [ "$role" != "doc" ]; then
+    local repo="${WORK_REPO_NAME:-}"
+    [ -n "$repo" ] && args+=( --repo "$repo" )
+  fi
 
   # Capture rc via `|| rc=$?` so the helper survives a caller's `set -e`.
   local rc=0
