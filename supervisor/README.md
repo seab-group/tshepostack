@@ -19,6 +19,19 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk), polling behavior (poll_approval), T21 trust ledger bash checks (AC4/AC5/AC6a/AC6b), and T22 trust auto-decision file tests (AC6: approve rule writes `{ approved:true, auto:true }` decision file, no request file, stderr `[trust] auto-approved:`; AC7: reject rule writes `{ approved:false, auto:true }` decision file, exits 1, stderr `[trust] auto-rejected:`) (v7.1) |
 | `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4), workspace registry (T17 AC1-AC7: GET/POST /api/workspaces, DELETE /api/workspaces/:id, POST /api/workspaces/:id/activate, bootstrapWorkspace AC5/AC6, validAgents reload AC7), T17a back-compat (CONTROL_DIR first boot AC1, existing registry AC2, validAgents from fleet.conf AC3, missing fleet.conf AC4), and T19 cost tracker (AC1: aggregation with known JSONL totals, AC2: 30s cache hit — second call uses cached result, AC3: cache invalidation on workspace-switch via `costInvalidateFn`, AC4: malformed `cost_usd` skipped without 500, AC5: `?since=` filter bypasses cache and returns filtered totals, AC6: no-cost-data → empty agents array), T19-amended cache contract tests (cachedAt ISO string AC1, TTL spy/hit AC2, workspace-switch invalidation AC3, since-bypass double-call AC4/AC5 — ports 7894/7895/7896), T21 trust ledger (GET AC1: 2 tests, POST AC2: 4 tests, DELETE AC3: 2 tests — port 7890), T22 decisions watcher (makeDecisionsWatchHandler AC8: 5 tests — no broadcast on auto:true decision file, no broadcast on .decision.json human file, broadcast on request .json file, no broadcast on non-.json, no broadcast on unreadable file), and T22-amended path param fix (describe("DELETE /api/trust path param") AC2: valid UUID in path → 204 + rule removed; malformed non-UUID id → 400), T23 v1.1 integration tests (workspace registry AC1: 5 tests — GET empty/POST validate/POST create UUID/DELETE shifts activeId/activate SSE — port 7875; cost tracker AC2: 5 tests — aggregation/cache-hit/cache-miss after switch/since filter/malformed skip — port 7876; trust ledger AC3: 8 tests — GET missing/GET existing/POST validate agent/POST validate action/DELETE 204/DELETE 404/bash wrapper auto-approve/auto-reject — port 7877; cross-feature AC4 workspace-cost port 7878; cross-feature AC5 workspace-validAgents port 7879; also fixes capturedGitArgs orphan in draft-decision AC1 beforeEach) (181 total: 2 bash-wrapper + 179 server) |
 | `console/qa-smoke.sh` | QA smoke test for console UI — boots server on a random free port, asserts all GET endpoints return 200, T13 AC4/AC5 (pipeline JSON + `pipeline-groups` element), T15 AC1/AC2 (stuck endpoint + `stuck-cards` element + `stuck-alert-slot` DOM order), T16 AC6/AC7 (JSON content-type headers, fleet stop mock PID), T18 AC1 (`workspace-pill` element in HTML), T17 AC1 (`GET /api/workspaces` returns 200 with `workspaces` key), T20 AC1/AC7 (`index.html` contains `cost-table` and `cost-tbody` elements), T20 AC6 (`GET /api/cost` returns 200 with `agents` key), T22 AC1 (POST /api/trust → rule returned; GET /api/trust → `rules` key present; `index.html` contains `section-trust` and `trust-rules` elements), T23 AC6 (POST /api/workspaces with smoke-workspace → `workspace` key in response; GET /api/workspaces → 200; GET /api/cost → 200) — 26 checks total (v7.1) |
+| `console-v2/package.json` | v2 frontend scaffold — standalone Bun workspace (`"type": "module"`); dependencies: `react@^19`, `react-dom@^19`, `framer-motion@^11`, `@tanstack/react-query@^5`, `shadcn@^4.12`, `tw-animate-css`, `@fontsource-variable/geist`, `@base-ui/react`; devDependencies: `vite@^6`, `@vitejs/plugin-react@^4`, `tailwindcss@^4`, `@tailwindcss/vite@^4`, `typescript@^5.5`, `vitest@^3`, `@testing-library/react@^16`, `jsdom@^25`, `class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`; scripts: `dev` (vite), `build` (tsc -b + vite build), `test` (vitest run) (T24 AC1) |
+| `console-v2/vite.config.ts` | Vite 6 config — plugins: `@vitejs/plugin-react` (JSX transform) + `@tailwindcss/vite` (Tailwind v4 CSS processing); resolve alias `@` → `./src`; Vitest inline config: `environment: 'jsdom'`, `globals: true` (T24 AC1/AC8) |
+| `console-v2/index.html` | Vite HTML entry — `<div id="root">` mount point; loads `src/main.tsx` as `type="module"`; title "Fleet Console v2" (T24 AC2) |
+| `console-v2/components.json` | shadcn/ui config generated by `bunx shadcn@latest init` — `style: "base-nova"`, `baseColor: "slate"`, `cssVariables: true`, `iconLibrary: "lucide"`, `rsc: false`, `tsx: true`; aliases: `@/components`, `@/lib/utils`, `@/components/ui`, `@/lib`, `@/hooks` (T24 AC5) |
+| `console-v2/bunfig.toml` | Bun test environment — `[test] environment = "jsdom"` (overridden per-test by `test-setup.ts` which manually binds DOM globals) (T24 AC8) |
+| `console-v2/src/main.tsx` | React 19 entry point — creates `QueryClient`, wraps `<App />` in `<QueryClientProvider client={queryClient}>` inside `React.StrictMode`; mounts to `document.getElementById('root')` (T24 AC6) |
+| `console-v2/src/App.tsx` | Phase A placeholder — flex-centred heading `"Fleet Console v2 — coming soon"` (h1, text-2xl, font-semibold) wrapped in `<motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3, ease: [0.16,1,0.3,1] }}>` — easing matches `--ease-enter` from tokens.css (T24 AC2/AC7) |
+| `console-v2/src/index.css` | Tailwind v4 CSS-first entry — `@import "tailwindcss"` (no tailwind.config.js); imports `./styles/tokens.css`, `tw-animate-css`, `shadcn/tailwind.css`, `@fontsource-variable/geist`; `@custom-variant dark (&:is(.dark *))` for dark mode; `@theme inline` block maps shadcn CSS var names (`--background`, `--foreground`, `--primary`, etc.) to Tailwind `--color-*` and `--radius-*` tokens; `:root` and `.dark` blocks define oklch colour palette for shadcn CSS variables; `@layer base` resets: `border-border outline-ring/50` on all elements, `bg-background text-foreground` on body, `font-sans` on html (T24 AC4/AC5) |
+| `console-v2/src/styles/tokens.css` | Design tokens — `@theme` directive (Tailwind v4 CSS-first config): colour palette extended from `console/styles.css` (`--color-base: #0C0C0C`, surface/surface-2/border/text/text-dim/text-micro, amber/green/red/blue); typography (`--font-body: 'Satoshi', 'DM Sans', system-ui` at 16px, `--font-mono: 'JetBrains Mono', ui-monospace`); 8 pt spacing grid (`--spacing-1` 4px through `--spacing-8` 32px); radius (`--radius-card: 6px`, `--radius-badge: 4px`, `--radius-btn: 6px`); motion (`--ease-enter: cubic-bezier(0.16,1,0.3,1)`, `--ease-exit: cubic-bezier(0.7,0,0.84,0)`, `--duration-micro: 75ms`, `--duration-short: 150ms`, `--duration-medium: 250ms`) (T24 AC4) |
+| `console-v2/src/lib/utils.ts` | `cn()` helper — `twMerge(clsx(...inputs))`; used by all shadcn components to merge Tailwind classes safely, resolving conflicts and honouring specificity (T24) |
+| `console-v2/src/components/ui/button.tsx` | shadcn Button — `cva`-based; 6 variants: `default` (bg-primary), `destructive` (bg-destructive), `outline` (border + hover:bg-accent), `secondary` (bg-secondary), `ghost` (hover:bg-accent), `link` (underline hover); 4 sizes: `default` h-10 px-4, `sm` h-9 px-3, `lg` h-11 px-8, `icon` h-10 w-10; `React.forwardRef<HTMLButtonElement, ButtonProps>` (T24 AC5) |
+| `console-v2/src/App.test.tsx` | Vitest renders-without-crashing test — imports `test-setup.ts` to initialise DOM globals; wraps `<App />` in a `<QueryClientProvider>` helper; calls `render(<App />, { wrapper })`; 1 test in `describe('App')`; passes under `bun test supervisor/console-v2/` (T24 AC8) |
+| `console-v2/src/test-setup.ts` | jsdom DOM polyfill — creates `new JSDOM(...)` with `url: 'http://localhost'`; assigns `window`, `document`, `navigator`, `HTMLElement`, `SVGElement`, `Element`, `Node`, `Text`, `Comment`, `DocumentFragment`, `MutationObserver` to `globalThis` via `Object.defineProperty`; imported as the first line of `App.test.tsx` (T24 AC8) |
 
 ---
 
@@ -3078,6 +3091,185 @@ Two new `describe` blocks in `server.test.ts` cover all seven ACs:
 | `malformed JSON lines silently skipped` | AC5 | File with 1 bad line, 2 valid → 2 events returned |
 | `X-Log-Lines header equals total line count` | AC6 | 100-line file, header `100` |
 | `11th request returns 429` | AC7 | Isolated server, 11 sequential requests → first 10 are 200, 11th is 429 |
+
+---
+
+## Fleet Console v2 — Phase A scaffold (T24)
+
+T24 creates `supervisor/console-v2/` as a standalone Bun workspace — the v2 frontend rewrite of the fleet console. The existing `supervisor/console/` directory (server.ts + v1.1 UI) is untouched; v2 runs on a separate development port and will be served by the same server on a different path in Phase B (T25). Phase A delivers the complete frontend stack with a placeholder UI and no feature code.
+
+### Project layout
+
+```
+supervisor/console-v2/
+├── package.json                    # standalone workspace; "type": "module"
+├── vite.config.ts                  # Vite 6 + @vitejs/plugin-react + @tailwindcss/vite; @ alias → src/
+├── index.html                      # Vite HTML entry; mounts React at <div id="root">
+├── components.json                 # shadcn/ui: style=base-nova, baseColor=slate, CSS vars on
+├── bunfig.toml                     # [test] environment = "jsdom"
+├── tsconfig.json / tsconfig.app.json / tsconfig.node.json
+├── src/
+│   ├── main.tsx                    # React 19 entry; QueryClient + QueryClientProvider
+│   ├── App.tsx                     # placeholder heading with Framer Motion fade-in
+│   ├── App.test.tsx                # renders-without-crashing Vitest test
+│   ├── test-setup.ts               # jsdom DOM globals bound to globalThis
+│   ├── vite-env.d.ts               # /// <reference types="vite/client" />
+│   ├── index.css                   # Tailwind v4 @import; shadcn CSS vars; dark mode
+│   ├── styles/tokens.css           # @theme: palette, 8pt grid, radius, motion tokens
+│   ├── lib/utils.ts                # cn() = twMerge(clsx(...))
+│   └── components/ui/button.tsx   # shadcn Button: 6 variants, 4 sizes, React.forwardRef
+└── bun.lock
+```
+
+### Frontend stack (AC1)
+
+| Package | Version | Role |
+|---|---|---|
+| `react` / `react-dom` | `^19.0.0` | Core UI library |
+| `vite` | `^6.0.0` | Dev server and bundler |
+| `@vitejs/plugin-react` | `^4.0.0` | JSX transform |
+| `tailwindcss` + `@tailwindcss/vite` | `^4.0.0` | Utility CSS, CSS-first (no tailwind.config.js) |
+| `shadcn` | `^4.12.0` | UI component generator |
+| `@tanstack/react-query` | `^5.0.0` | Server-state management |
+| `framer-motion` | `^11.0.0` | Animation |
+| `vitest` | `^3.0.0` | Component test runner |
+| `@testing-library/react` | `^16.0.0` | DOM rendering assertions |
+| `typescript` | `^5.5.0` | Type checking |
+
+### Tailwind v4 CSS-first design (AC4)
+
+Tailwind v4 uses `@import "tailwindcss"` in CSS instead of a `tailwind.config.js` file. The design-token hierarchy in `console-v2/` is:
+
+```
+src/index.css
+  @import "tailwindcss"                   ← Tailwind v4 reset + utilities
+  @import "./styles/tokens.css"           ← project design tokens (@theme)
+  @import "tw-animate-css"                ← animation utilities
+  @import "shadcn/tailwind.css"           ← shadcn CSS layer
+  @import "@fontsource-variable/geist"    ← Geist Variable font
+
+  @theme inline { ... }    ← maps shadcn CSS var names → Tailwind color/radius tokens
+  :root { ... }            ← shadcn oklch light palette
+  .dark { ... }            ← shadcn oklch dark palette
+  @layer base { ... }      ← border-border, bg-background, font-sans defaults
+```
+
+`tokens.css` uses the `@theme` directive to define project-specific tokens extended from `console/styles.css`:
+
+| Token group | Tokens |
+|---|---|
+| Colour | `--color-base` (`#0C0C0C`), `--color-surface` (`#141414`), `--color-surface-2` (`#1C1C1C`), `--color-border` (`#262626`), `--color-text` (`#FAFAFA`), `--color-text-dim` (`#A1A1AA`), `--color-text-micro` (`#52525B`), `--color-amber` (`#F59E0B`), `--color-amber-dim` (`#FBBF24`), `--color-green` (`#22C55E`), `--color-red` (`#EF4444`), `--color-blue` (`#3B82F6`) |
+| Typography | `--font-body: 'Satoshi', 'DM Sans', system-ui, sans-serif` (body 16px), `--font-mono: 'JetBrains Mono', ui-monospace, monospace`, `--font-display: 'Satoshi', 'DM Sans', system-ui, sans-serif` |
+| Spacing | 8 pt grid: `--spacing-1: 4px`, `--spacing-2: 8px`, `--spacing-3: 12px`, `--spacing-4: 16px`, `--spacing-6: 24px`, `--spacing-8: 32px` |
+| Border radius | `--radius-card: 6px`, `--radius-badge: 4px`, `--radius-btn: 6px` |
+| Motion | `--ease-enter: cubic-bezier(0.16,1,0.3,1)`, `--ease-exit: cubic-bezier(0.7,0,0.84,0)`, `--duration-micro: 75ms`, `--duration-short: 150ms`, `--duration-medium: 250ms` |
+
+### shadcn/ui configuration (AC5)
+
+`components.json` was generated by `bunx shadcn@latest init`. Key fields:
+
+```json
+{
+  "style": "base-nova",
+  "tailwind": { "baseColor": "slate", "cssVariables": true, "css": "src/index.css" },
+  "aliases": { "components": "@/components", "utils": "@/lib/utils", "ui": "@/components/ui" }
+}
+```
+
+`src/components/ui/button.tsx` is the first generated component. It uses `class-variance-authority` (cva) to define:
+
+| Variant | Applied classes |
+|---|---|
+| `default` | `bg-primary text-primary-foreground hover:bg-primary/90` |
+| `destructive` | `bg-destructive text-destructive-foreground hover:bg-destructive/90` |
+| `outline` | `border border-input bg-background hover:bg-accent hover:text-accent-foreground` |
+| `secondary` | `bg-secondary text-secondary-foreground hover:bg-secondary/80` |
+| `ghost` | `hover:bg-accent hover:text-accent-foreground` |
+| `link` | `text-primary underline-offset-4 hover:underline` |
+
+Sizes: `default` h-10 px-4, `sm` h-9 px-3, `lg` h-11 px-8, `icon` h-10 w-10.
+
+### Placeholder app (AC2 / AC7)
+
+`App.tsx` renders the placeholder heading inside a Framer Motion fade-in wrapper:
+
+```tsx
+import { motion } from 'framer-motion'
+
+function App() {
+  return (
+    <div className="flex min-h-screen items-center justify-center">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+      >
+        <h1 className="text-2xl font-semibold">Fleet Console v2 — coming soon</h1>
+      </motion.div>
+    </div>
+  )
+}
+```
+
+The ease curve `[0.16, 1, 0.3, 1]` matches `--ease-enter` from `tokens.css`. `bun run dev --prefix supervisor/console-v2` serves this on port 5173.
+
+### Test setup (AC8)
+
+The scaffold works under `bun test supervisor/console-v2/` (Bun's test runner, not Vite). `test-setup.ts` manually creates a `JSDOM` instance and assigns the DOM globals to `globalThis`:
+
+```typescript
+import { JSDOM } from 'jsdom'
+const dom = new JSDOM('<!DOCTYPE html><html><body><div id="root"></div></body></html>', {
+  url: 'http://localhost',
+})
+Object.defineProperty(globalThis, 'window', { value: dom.window, writable: true })
+// ... HTMLElement, SVGElement, Element, Node, Text, Comment, DocumentFragment, MutationObserver
+```
+
+`App.test.tsx` wraps `<App />` in a `<QueryClientProvider>` (required by TanStack Query) and calls `render()`:
+
+```typescript
+function wrapper({ children }: { children: React.ReactNode }) {
+  return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>
+}
+describe('App', () => {
+  it('renders without crashing', () => {
+    render(<App />, { wrapper })
+  })
+})
+```
+
+### Running console-v2
+
+```bash
+# install dependencies (standalone workspace — bun.lock lives in console-v2/)
+bun install --cwd supervisor/console-v2
+
+# development server (port 5173)
+bun run dev --prefix supervisor/console-v2
+
+# production build → supervisor/console-v2/dist/
+bun run build --prefix supervisor/console-v2
+
+# unit tests
+bun test supervisor/console-v2/
+```
+
+`supervisor/console-v2/dist/` and `supervisor/console-v2/node_modules/` are in `.gitignore` and must never be committed.
+
+### AC → verification mapping
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `bun install` in `supervisor/console-v2/` exits 0; all packages resolve | done_check |
+| AC2 | PR review — `bun run dev` starts on port 5173; placeholder heading renders | human-verify |
+| AC3 | PR review — `bun run build` produces `dist/index.html` and hashed asset files | human-verify |
+| AC4 | PR review — `tokens.css` uses `@theme` directive; spacing, radius, and colour vars present | human-verify |
+| AC5 | PR review — `components.json` committed; `src/components/ui/button.tsx` present | human-verify |
+| AC6 | `bun test supervisor/console-v2/` — `QueryClientProvider` import resolves, test passes | done_check |
+| AC7 | PR review — placeholder heading animates with fade-in (opacity 0→1) on mount | human-verify |
+| AC8 | `bun test supervisor/console-v2/` — renders-without-crashing test passes, exit 0 | done_check |
+| AC9 | `bun test supervisor/console/` exits 0 — all 181 existing v1.1 tests unaffected | done_check |
 
 ---
 
