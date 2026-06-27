@@ -4,7 +4,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { createServer } from "node:http";
 import type { Server, IncomingMessage, ServerResponse } from "node:http";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, utimesSync, readFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, utimesSync, readFileSync, unlinkSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, isAbsolute, basename } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -2344,9 +2344,13 @@ describe("log n=0", () => {
 
 describe("POST /api/draft-decision", () => {
   test("AC1: appends correct mailbox block to {controlDir}/mailboxes/{agentName}.md", async () => {
-    capturedGitArgs = null;
-    gitShouldFail = false;
-    const mailboxFile = join(draftMailboxDir, "agent-be.md");
+    t15aTaskFailCalls = [];
+    t15aSpawnCalls = [];
+    t15aMockTaskFailCode = 0;
+    writeFileSync(
+      join(t15aLedgerDir, "TASK-001.task"),
+      "id: TASK-001\nclaimed_by: agent-be\nstatus: in_progress\n",
+    );
 
     const r = await fetch(`http://127.0.0.1:${T15A_PORT}/api/fleet/restart?agent=agent-be`, { method: "POST" });
     expect(r.status).toBe(200);
@@ -3254,5 +3258,518 @@ describe("cost cache bypass since", () => {
     } finally {
       await new Promise<void>((r) => s.close(() => r()));
     }
+  });
+});
+
+// =============================================================================
+// T23 — v1.1 integration test suite: workspace registry + cost tracker + trust ledger
+// =============================================================================
+
+const T23_WS_PORT = 7875;
+const T23_COST_PORT = 7876;
+const T23_TRUST_PORT = 7877;
+const T23_XF_COST_PORT = 7878;
+const T23_XF_VA_PORT = 7879;
+
+// --- T23 AC1: workspace registry ---
+
+describe("workspace registry", () => {
+  const t23WsDir = mkdtempSync(join(tmpdir(), "console-t23-ws-"));
+  const t23WsRegPath = join(t23WsDir, "workspaces.json");
+  const t23WsBroadcasts: string[] = [];
+  let t23WsServer: Server;
+
+  beforeAll(() =>
+    new Promise<void>((resolve) => {
+      t23WsServer = createServer(
+        makeWorkspacesHandler({
+          workspacesPath: t23WsRegPath,
+          broadcastFn: (f) => t23WsBroadcasts.push(f),
+        }),
+      );
+      t23WsServer.listen(T23_WS_PORT, "127.0.0.1", resolve);
+    }),
+  );
+
+  afterAll(() =>
+    new Promise<void>((resolve, reject) => {
+      t23WsServer.close((err) => {
+        rmSync(t23WsDir, { recursive: true, force: true });
+        if (err) reject(err); else resolve();
+      });
+    }),
+  );
+
+  test("GET returns empty registry when file is missing", async () => {
+    if (existsSync(t23WsRegPath)) unlinkSync(t23WsRegPath);
+    const r = await fetch(`http://127.0.0.1:${T23_WS_PORT}/api/workspaces`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as WorkspaceRegistry;
+    expect(body.workspaces).toEqual([]);
+    expect(body.activeId).toBeNull();
+  });
+
+  test("POST rejects relative controlDir with 400", async () => {
+    const r = await fetch(`http://127.0.0.1:${T23_WS_PORT}/api/workspaces`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "X", controlDir: "relative/path" }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  test("POST creates workspace with UUID id when controlDir/ledger exists", async () => {
+    if (existsSync(t23WsRegPath)) unlinkSync(t23WsRegPath);
+    const fakeCtrl = join(t23WsDir, "ctrl");
+    mkdirSync(join(fakeCtrl, "ledger"), { recursive: true });
+    const r = await fetch(`http://127.0.0.1:${T23_WS_PORT}/api/workspaces`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Alpha", controlDir: fakeCtrl }),
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { workspace: Workspace };
+    expect(body.workspace.name).toBe("Alpha");
+    expect(typeof body.workspace.id).toBe("string");
+    expect(body.workspace.id).toHaveLength(36);
+    const saved = readWorkspaceRegistry(t23WsRegPath);
+    expect(saved.workspaces).toHaveLength(1);
+  });
+
+  test("DELETE active workspace shifts activeId to first remaining", async () => {
+    const reg: WorkspaceRegistry = {
+      workspaces: [
+        { id: "t23-del1", name: "One", controlDir: "/one", createdAt: "2026-01-01T00:00:00Z" },
+        { id: "t23-del2", name: "Two", controlDir: "/two", createdAt: "2026-01-01T00:00:00Z" },
+      ],
+      activeId: "t23-del1",
+    };
+    writeWorkspaceRegistry(t23WsRegPath, reg);
+    const r = await fetch(`http://127.0.0.1:${T23_WS_PORT}/api/workspaces/t23-del1`, { method: "DELETE" });
+    expect(r.status).toBe(204);
+    const saved = readWorkspaceRegistry(t23WsRegPath);
+    expect(saved.workspaces).toHaveLength(1);
+    expect(saved.activeId).toBe("t23-del2");
+  });
+
+  test("activate sends workspace-switch SSE event", async () => {
+    t23WsBroadcasts.length = 0;
+    const reg: WorkspaceRegistry = {
+      workspaces: [
+        { id: "t23-act1", name: "Gamma", controlDir: "/gamma", createdAt: "2026-01-01T00:00:00Z" },
+        { id: "t23-act2", name: "Delta", controlDir: "/delta", createdAt: "2026-01-01T00:00:00Z" },
+      ],
+      activeId: "t23-act1",
+    };
+    writeWorkspaceRegistry(t23WsRegPath, reg);
+    const r = await fetch(`http://127.0.0.1:${T23_WS_PORT}/api/workspaces/t23-act2/activate`, { method: "POST" });
+    expect(r.status).toBe(200);
+    expect(t23WsBroadcasts).toHaveLength(1);
+    expect(t23WsBroadcasts[0]).toContain("event: workspace-switch");
+    const dataLine = t23WsBroadcasts[0].split("\n").find((l) => l.startsWith("data:")) ?? "";
+    const payload = JSON.parse(dataLine.slice("data:".length).trim()) as Record<string, unknown>;
+    expect(payload.workspaceId).toBe("t23-act2");
+    expect(payload.name).toBe("Delta");
+  });
+});
+
+// --- T23 AC2: cost tracker ---
+
+describe("cost tracker", () => {
+  const t23CostDir = mkdtempSync(join(tmpdir(), "console-t23-cost-"));
+  const t23AgentsHome = join(t23CostDir, "agents");
+  const t23CostRegPath = join(t23CostDir, "workspaces.json");
+  let t23CostCache: Map<string, { data: CostResponse; expiresAt: number }>;
+  let t23CostServer: Server;
+
+  beforeAll(() =>
+    new Promise<void>((resolve) => {
+      mkdirSync(join(t23AgentsHome, "cost-agent", "logs"), { recursive: true });
+      writeFileSync(
+        join(t23AgentsHome, "cost-agent", "logs", "live-events.jsonl"),
+        [
+          JSON.stringify({ ts: "2026-01-01T10:00:00Z", tokens_in: 100, tokens_out: 50, cost_usd: 0.001 }),
+          JSON.stringify({ ts: "2026-01-01T11:00:00Z", tokens_in: 200, tokens_out: 80, cost_usd: 0.002 }),
+          JSON.stringify({ ts: "2026-01-01T12:00:00Z", tool: "Bash" }),
+          JSON.stringify({ ts: "2026-01-01T13:00:00Z", cost_usd: "bad" }),
+        ].join("\n") + "\n",
+      );
+      writeWorkspaceRegistry(t23CostRegPath, {
+        workspaces: [{ id: "t23-cost-ws", name: "CostWS", controlDir: "/cost-ctrl", createdAt: "2026-01-01T00:00:00Z" }],
+        activeId: "t23-cost-ws",
+      });
+      t23CostCache = new Map();
+      t23CostServer = createServer(
+        makeCostHandler({
+          agents: ["cost-agent"],
+          agentsHome: t23AgentsHome,
+          workspacesPath: t23CostRegPath,
+          costCache: t23CostCache,
+        }),
+      );
+      t23CostServer.listen(T23_COST_PORT, "127.0.0.1", resolve);
+    }),
+  );
+
+  afterAll(() =>
+    new Promise<void>((resolve) => {
+      t23CostServer.close(() => {
+        rmSync(t23CostDir, { recursive: true, force: true });
+        resolve();
+      });
+    }),
+  );
+
+  test("GET returns correct aggregated totals from JSONL", async () => {
+    t23CostCache.clear();
+    const r = await fetch(`http://127.0.0.1:${T23_COST_PORT}/api/cost`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as CostResponse;
+    expect(body.agents).toHaveLength(1);
+    const row = body.agents[0];
+    expect(row.agent).toBe("cost-agent");
+    expect(row.tokens_in).toBe(300);
+    expect(row.tokens_out).toBe(130);
+    expect(row.cost_usd).toBeCloseTo(0.003, 5);
+    expect(body.total.cost_usd).toBeCloseTo(0.003, 5);
+  });
+
+  test("cache hit: second call within TTL does not re-compute", async () => {
+    let calls = 0;
+    const spy = (agents: string[], home: string, since?: string): CostResponse => {
+      calls++;
+      return computeCostData(agents, home, since);
+    };
+    const localCache = new Map<string, { data: CostResponse; expiresAt: number }>();
+    const localReg = join(t23CostDir, "ws-cache.json");
+    writeWorkspaceRegistry(localReg, {
+      workspaces: [{ id: "t23-cache-ws", name: "C", controlDir: "/c", createdAt: "2026-01-01T00:00:00Z" }],
+      activeId: "t23-cache-ws",
+    });
+    const s = createServer(makeCostHandler({ agents: ["cost-agent"], agentsHome: t23AgentsHome, workspacesPath: localReg, costCache: localCache, computeFn: spy }));
+    await new Promise<void>((r) => s.listen(7897, "127.0.0.1", r));
+    try {
+      await fetch("http://127.0.0.1:7897/api/cost");
+      await fetch("http://127.0.0.1:7897/api/cost");
+      expect(calls).toBe(1);
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  test("cache miss after workspace switch: cost cache invalidated for outgoing workspace", async () => {
+    const switchDir = mkdtempSync(join(tmpdir(), "t23-cost-switch-"));
+    const switchReg = join(switchDir, "workspaces.json");
+    const switchCache = new Map<string, { data: CostResponse; expiresAt: number }>();
+    writeWorkspaceRegistry(switchReg, {
+      workspaces: [
+        { id: "t23-sw1", name: "WS1", controlDir: "/s1", createdAt: "2026-01-01T00:00:00Z" },
+        { id: "t23-sw2", name: "WS2", controlDir: "/s2", createdAt: "2026-01-01T00:00:00Z" },
+      ],
+      activeId: "t23-sw1",
+    });
+    switchCache.set("t23-sw1", { data: { agents: [], total: { tokens_in: 0, tokens_out: 0, cost_usd: 0 }, cachedAt: "2026-01-01T00:00:00Z" }, expiresAt: Date.now() + 60_000 });
+    const wsS = createServer(makeWorkspacesHandler({ workspacesPath: switchReg, costInvalidateFn: (id) => switchCache.delete(id) }));
+    await new Promise<void>((r) => wsS.listen(7898, "127.0.0.1", r));
+    try {
+      const r = await fetch("http://127.0.0.1:7898/api/workspaces/t23-sw2/activate", { method: "POST" });
+      expect(r.status).toBe(200);
+      expect(switchCache.has("t23-sw1")).toBe(false);
+    } finally {
+      await new Promise<void>((r) => wsS.close(() => r()));
+      rmSync(switchDir, { recursive: true, force: true });
+    }
+  });
+
+  test("?since= filter returns only events at or after the timestamp", async () => {
+    const r = await fetch(`http://127.0.0.1:${T23_COST_PORT}/api/cost?since=2026-01-01T10:30:00Z`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as CostResponse;
+    const row = body.agents.find((a: CostAgentRow) => a.agent === "cost-agent");
+    expect(row).toBeDefined();
+    expect(row!.tokens_in).toBe(200);
+    expect(row!.cost_usd).toBeCloseTo(0.002, 5);
+  });
+
+  test("malformed cost_usd fields are skipped without error", async () => {
+    t23CostCache.clear();
+    const r = await fetch(`http://127.0.0.1:${T23_COST_PORT}/api/cost`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as CostResponse;
+    const row = body.agents[0];
+    expect(row.cost_usd).toBeCloseTo(0.003, 5);
+  });
+});
+
+// --- T23 AC3: trust ledger ---
+
+describe("trust ledger", () => {
+  const t23TrustDir = mkdtempSync(join(tmpdir(), "console-t23-trust-"));
+  const t23TrustPath = join(t23TrustDir, "trust.json");
+  const t23ValidAgents = new Set(["agent-be", "agent-qa"]);
+  let t23TrustServer: Server;
+
+  beforeAll(() =>
+    new Promise<void>((resolve) => {
+      t23TrustServer = createServer(makeTrustHandler({ trustPath: t23TrustPath, validAgents: t23ValidAgents }));
+      t23TrustServer.listen(T23_TRUST_PORT, "127.0.0.1", resolve);
+    }),
+  );
+
+  afterAll(() =>
+    new Promise<void>((resolve, reject) => {
+      t23TrustServer.close((err) => {
+        rmSync(t23TrustDir, { recursive: true, force: true });
+        if (err) reject(err); else resolve();
+      });
+    }),
+  );
+
+  test("GET returns { rules: [] } when trust.json is missing", async () => {
+    if (existsSync(t23TrustPath)) unlinkSync(t23TrustPath);
+    const r = await fetch(`http://127.0.0.1:${T23_TRUST_PORT}/api/trust`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { rules: TrustRule[] };
+    expect(body.rules).toEqual([]);
+  });
+
+  test("GET returns existing rules from trust.json", async () => {
+    writeTrustLedger(t23TrustPath, {
+      rules: [{ id: "t23-r1", agent: "agent-be", pattern: "bun test", action: "approve", createdAt: "2026-01-01T00:00:00Z" }],
+    });
+    const r = await fetch(`http://127.0.0.1:${T23_TRUST_PORT}/api/trust`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { rules: TrustRule[] };
+    expect(body.rules).toHaveLength(1);
+    expect(body.rules[0].id).toBe("t23-r1");
+  });
+
+  test("POST validates agent — unknown agent returns 400", async () => {
+    const r = await fetch(`http://127.0.0.1:${T23_TRUST_PORT}/api/trust`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "agent-unknown", pattern: "bun test", action: "approve" }),
+    });
+    expect(r.status).toBe(400);
+    const body = (await r.json()) as { error: string };
+    expect(body.error).toMatch(/unknown agent/);
+  });
+
+  test("POST validates action — invalid action returns 400", async () => {
+    const r = await fetch(`http://127.0.0.1:${T23_TRUST_PORT}/api/trust`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "agent-be", pattern: "bun test", action: "allow" }),
+    });
+    expect(r.status).toBe(400);
+    const body = (await r.json()) as { error: string };
+    expect(body.error).toMatch(/action/);
+  });
+
+  test("DELETE removes rule and returns 204", async () => {
+    writeTrustLedger(t23TrustPath, {
+      rules: [{ id: "t23-del-r1", agent: "agent-be", pattern: "bun test", action: "approve", createdAt: "2026-01-01T00:00:00Z" }],
+    });
+    const r = await fetch(`http://127.0.0.1:${T23_TRUST_PORT}/api/trust/t23-del-r1`, { method: "DELETE" });
+    expect(r.status).toBe(204);
+    const saved = readTrustLedger(t23TrustPath);
+    expect(saved.rules).toHaveLength(0);
+  });
+
+  test("DELETE unknown id returns 404", async () => {
+    if (existsSync(t23TrustPath)) unlinkSync(t23TrustPath);
+    const r = await fetch(`http://127.0.0.1:${T23_TRUST_PORT}/api/trust/nonexistent`, { method: "DELETE" });
+    expect(r.status).toBe(404);
+  });
+
+  test("bash wrapper auto-approve: exits 0 when matching approve rule exists", () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), "t23-bash-home-"));
+    const mockBin = join(tmpHome, "mockbin");
+    mkdirSync(join(tmpHome, ".gstack-console"), { recursive: true });
+    mkdirSync(mockBin, { recursive: true });
+    const mockGit = join(mockBin, "git");
+    writeFileSync(mockGit, "#!/usr/bin/env bash\nexit 0\n");
+    chmodSync(mockGit, 0o755);
+    writeTrustLedger(join(tmpHome, ".gstack-console", "trust.json"), {
+      rules: [{ id: "r-approve", agent: "test_agent", pattern: "git push", action: "approve", createdAt: "2026-01-01T00:00:00Z" }],
+    });
+    const decDir = mkdtempSync(join(tmpdir(), "t23-bash-dec-"));
+    const wrapperPath = join(import.meta.dir, "bin", "bash");
+    const result = spawnSync("/bin/bash", [wrapperPath, "-c", "git push origin main"], {
+      env: { HOME: tmpHome, TMPDIR: tmpdir(), PATH: `${mockBin}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`, SUPERVISOR_DECISIONS_DIR: decDir, AGENT_NAME: "test_agent" },
+      timeout: 5000,
+      encoding: "utf8",
+    });
+    rmSync(tmpHome, { recursive: true, force: true });
+    rmSync(decDir, { recursive: true, force: true });
+    expect(result.status).toBe(0);
+  });
+
+  test("bash wrapper auto-reject: exits 1 when matching reject rule exists", () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), "t23-bash-home-reject-"));
+    mkdirSync(join(tmpHome, ".gstack-console"), { recursive: true });
+    writeTrustLedger(join(tmpHome, ".gstack-console", "trust.json"), {
+      rules: [{ id: "r-reject", agent: "test_agent", pattern: "git push", action: "reject", createdAt: "2026-01-01T00:00:00Z" }],
+    });
+    const decDir = mkdtempSync(join(tmpdir(), "t23-bash-dec-reject-"));
+    const wrapperPath = join(import.meta.dir, "bin", "bash");
+    const result = spawnSync("/bin/bash", [wrapperPath, "-c", "git push origin main"], {
+      env: { HOME: tmpHome, TMPDIR: tmpdir(), PATH: `/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`, SUPERVISOR_DECISIONS_DIR: decDir, AGENT_NAME: "test_agent" },
+      timeout: 5000,
+      encoding: "utf8",
+    });
+    rmSync(tmpHome, { recursive: true, force: true });
+    rmSync(decDir, { recursive: true, force: true });
+    expect(result.status).toBe(1);
+  });
+});
+
+// --- T23 AC4: cross-feature workspace switch invalidates cost cache ---
+
+describe("cross-feature: workspace switch invalidates cost cache", () => {
+  const t23XfCostDir = mkdtempSync(join(tmpdir(), "t23-xf-cost-"));
+  const t23XfCostRegPath = join(t23XfCostDir, "workspaces.json");
+  const t23XfAgentsHome = join(t23XfCostDir, "agents");
+  const t23XfCostCache = new Map<string, { data: CostResponse; expiresAt: number }>();
+  let t23XfCostServer: Server;
+
+  beforeAll(() =>
+    new Promise<void>((resolve) => {
+      mkdirSync(join(t23XfAgentsHome, "xf-agent", "logs"), { recursive: true });
+      writeFileSync(
+        join(t23XfAgentsHome, "xf-agent", "logs", "live-events.jsonl"),
+        JSON.stringify({ ts: "2026-01-01T10:00:00Z", tokens_in: 50, tokens_out: 20, cost_usd: 0.005 }) + "\n",
+      );
+      writeWorkspaceRegistry(t23XfCostRegPath, {
+        workspaces: [
+          { id: "xf-ws1", name: "WS1", controlDir: "/xf1", createdAt: "2026-01-01T00:00:00Z" },
+          { id: "xf-ws2", name: "WS2", controlDir: "/xf2", createdAt: "2026-01-01T00:00:00Z" },
+        ],
+        activeId: "xf-ws1",
+      });
+      const wsHandler = makeWorkspacesHandler({
+        workspacesPath: t23XfCostRegPath,
+        costInvalidateFn: (id) => t23XfCostCache.delete(id),
+      });
+      const costHandler = makeCostHandler({
+        agents: ["xf-agent"],
+        agentsHome: t23XfAgentsHome,
+        workspacesPath: t23XfCostRegPath,
+        costCache: t23XfCostCache,
+      });
+      t23XfCostServer = createServer((req, res) => {
+        if (rawPath(req.url).startsWith("/api/workspaces")) wsHandler(req, res);
+        else costHandler(req, res);
+      });
+      t23XfCostServer.listen(T23_XF_COST_PORT, "127.0.0.1", resolve);
+    }),
+  );
+
+  afterAll(() =>
+    new Promise<void>((resolve) => {
+      t23XfCostServer.close(() => {
+        rmSync(t23XfCostDir, { recursive: true, force: true });
+        resolve();
+      });
+    }),
+  );
+
+  test("activating second workspace clears cost cache; next GET /api/cost re-reads JSONL", async () => {
+    const stale: CostResponse = {
+      agents: [{ agent: "stale-agent", tokens_in: 999, tokens_out: 999, cost_usd: 999 }],
+      total: { tokens_in: 999, tokens_out: 999, cost_usd: 999 },
+      cachedAt: "2026-01-01T00:00:00Z",
+    };
+    t23XfCostCache.set("xf-ws1", { data: stale, expiresAt: Date.now() + 60_000 });
+
+    const activate = await fetch(`http://127.0.0.1:${T23_XF_COST_PORT}/api/workspaces/xf-ws2/activate`, { method: "POST" });
+    expect(activate.status).toBe(200);
+    expect(t23XfCostCache.has("xf-ws1")).toBe(false);
+
+    const costR = await fetch(`http://127.0.0.1:${T23_XF_COST_PORT}/api/cost`);
+    expect(costR.status).toBe(200);
+    const body = (await costR.json()) as CostResponse;
+    expect(body.total.cost_usd).not.toBe(999);
+  });
+});
+
+// --- T23 AC5: cross-feature workspace switch reloads validAgents ---
+
+describe("cross-feature: workspace switch reloads validAgents", () => {
+  const t23XfVADir = mkdtempSync(join(tmpdir(), "t23-xf-va-"));
+  const t23XfVARegPath = join(t23XfVADir, "workspaces.json");
+  let t23XfVAServer: Server;
+
+  beforeAll(() =>
+    new Promise<void>((resolve) => {
+      const wsACtrl = join(t23XfVADir, "ctrl-a");
+      const wsBCtrl = join(t23XfVADir, "ctrl-b");
+      mkdirSync(join(wsACtrl, "ledger"), { recursive: true });
+      mkdirSync(join(wsBCtrl, "ledger"), { recursive: true });
+      writeFileSync(join(wsACtrl, "fleet.conf"), "agent-be FEATURE_ROLE.md\n");
+      writeFileSync(join(wsBCtrl, "fleet.conf"), "agent-be FEATURE_ROLE.md\nagent-new-ws FEATURE_ROLE.md\n");
+
+      writeWorkspaceRegistry(t23XfVARegPath, {
+        workspaces: [
+          { id: "va-ws1", name: "WS-A", controlDir: wsACtrl, createdAt: "2026-01-01T00:00:00Z" },
+          { id: "va-ws2", name: "WS-B", controlDir: wsBCtrl, createdAt: "2026-01-01T00:00:00Z" },
+        ],
+        activeId: "va-ws1",
+      });
+
+      const sharedValidAgents = new Set(parseFleetConf("agent-be FEATURE_ROLE.md\n"));
+
+      const wsHandler = makeWorkspacesHandler({
+        workspacesPath: t23XfVARegPath,
+        rebuildValidAgentsFn: (dir) => {
+          sharedValidAgents.clear();
+          try {
+            const conf = readFileSync(join(dir, "fleet.conf"), "utf8");
+            for (const a of parseFleetConf(conf)) sharedValidAgents.add(a);
+          } catch { /* leave empty on error */ }
+        },
+      });
+      const trustHandler = makeTrustHandler({
+        trustPath: join(t23XfVADir, "trust.json"),
+        validAgents: sharedValidAgents,
+      });
+
+      t23XfVAServer = createServer((req, res) => {
+        if (rawPath(req.url).startsWith("/api/workspaces")) wsHandler(req, res);
+        else trustHandler(req, res);
+      });
+      t23XfVAServer.listen(T23_XF_VA_PORT, "127.0.0.1", resolve);
+    }),
+  );
+
+  afterAll(() =>
+    new Promise<void>((resolve, reject) => {
+      t23XfVAServer.close((err) => {
+        rmSync(t23XfVADir, { recursive: true, force: true });
+        if (err) reject(err); else resolve();
+      });
+    }),
+  );
+
+  test("POST /api/trust with agent valid only in new workspace returns 200 after workspace switch", async () => {
+    // Before switch: agent-new-ws is not in ws-A fleet → 400
+    const before = await fetch(`http://127.0.0.1:${T23_XF_VA_PORT}/api/trust`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "agent-new-ws", pattern: "bun test", action: "approve" }),
+    });
+    expect(before.status).toBe(400);
+
+    // Activate ws-B → validAgents rebuilt from ctrl-b/fleet.conf
+    const activate = await fetch(`http://127.0.0.1:${T23_XF_VA_PORT}/api/workspaces/va-ws2/activate`, { method: "POST" });
+    expect(activate.status).toBe(200);
+
+    // After switch: agent-new-ws is in ws-B fleet → 200
+    const after = await fetch(`http://127.0.0.1:${T23_XF_VA_PORT}/api/trust`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "agent-new-ws", pattern: "bun test", action: "approve" }),
+    });
+    expect(after.status).toBe(200);
   });
 });
