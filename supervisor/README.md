@@ -9,16 +9,16 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `fleet.conf` | Declare all agents in one place |
 | `install.sh` | Register an agent as a launchd (macOS) or systemd (Linux) service |
 | `wake-listen.ts` | Supabase Realtime subscriber — wakes idle agents in <1s cross-machine |
-| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE) |
+| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE; T11: fleet control routes — POST /api/fleet/stop, /restart, /pause, /resume; T11-amended: shim removed — `validAgents` built solely from `controlDir/fleet.conf` via `rebuildValidAgents()`, called at startup and on workspace switch; T15-amended: `POST /api/fleet/restart` calls `kernel/task fail {taskId} --agent {agentName} --role human` via `spawnSync` before stopping and relaunching — returns 500 if fail exits non-zero, skips if agent holds no claimed task; T5: `handleDraftDecision` rewritten — Anthropic SDK dependency removed, endpoint now appends a timestamped human note block to the agent's mailbox file and calls `gitCommitAndPush`) |
 | `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved) |
-| `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support) |
-| `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility) |
-| `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces) |
-| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation, fleet status reading, SSE helpers, watch handler, port resolution (v7.1) |
+| `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support, Pipeline tab panel with domain filter chips and spec panel) |
+| `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility, Pipeline tab with collapsible status groups, domain filter chips persisted in localStorage, spec panel on card click, `pipeline-update` SSE listener; T13-amended: `pipelineBootstrapped` one-shot guard on tab activate, `fetchPipeline()` called on SSE reconnect, all SSE listeners fixed from `currentEs` → `es`) |
+| `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces, pipeline group/card/filter/spec-panel component styles) |
+| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation (`TASK_ID_RE` supports both `CONS-003` and `T13` styles), fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), `makeLedgerWatchHandler` (broadcasts `pipeline-update` SSE on `.task` file changes), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files), `PipelineTask` type (T13); T11: `readPidFile` (reads PID from a pid file), `stopProcess` (SIGTERM + SIGKILL-after-5s async stop), `defaultIsProcessAlive` (signal-0 liveness check), `defaultKillFn` (signal sender), `KillFn`/`IsAliveFn` injectable types; T14: `computeStuckSignals` (reads each agent's JSONL tail + ledger, returns `StuckAgent[]` with silent/loop/fail_storm signals), `StuckAgent` type; T9: `readAndValidatePostBody` (validates Content-Type header + JSON body for all POST handlers; returns `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure) (v7.1) |
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
-| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, and `resolveControlDir` — taskId regex validation, agent name validation, needs_human endpoint (v7.1) |
-| `console/qa-smoke.sh` | QA smoke test for console UI — asserts page title, nav bar, and Fleet tab are present via gstack browse (v7.1) |
+| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), and T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4) (135 total: 2 bash-wrapper + 133 server) |
+| `console/qa-smoke.sh` | QA smoke test for console UI — asserts page title, nav bar, Fleet tab presence, T6 AC1/AC2/AC4/AC5 (Dicebear avatar src, elapsed time format, HIGH risk badge, Unblock button), and T13 AC4/AC5 (pipeline endpoint 200, `pipeline-groups` element in HTML, `tasks` key in pipeline JSON) via gstack browse (v7.1) |
 
 ---
 
@@ -325,11 +325,16 @@ The console (or human operator) creates a response file with the same name, appe
 
 Decision files are ephemeral and cleaned up automatically on two schedules to prevent disk accumulation:
 
-**Startup cleanup (AC1/AC2):** When `server.ts` starts, it reads `$SUPERVISOR_DECISIONS_DIR` and deletes any decision files (both request and response `.json` files) that are older than 24 hours. Files newer than 24h are preserved. This handles cases where the console crashes or restarts — stale approvals from previous sessions are garbage-collected, but in-flight approvals created within the last 24h survive the restart.
+**Startup cleanup (T8 AC1–AC4):** When `server.ts` starts, `purgeStaleDecisionFiles(dir)` runs a two-pass sweep of `$SUPERVISOR_DECISIONS_DIR`:
 
-**Post-approval cleanup (AC3/AC4):** When the console writes an approval response file via `POST /api/approve`, it schedules a cleanup timer with `setTimeout(() => unlink(decisionFile), 60_000)`. This gives the bash wrapper approximately 60 seconds to read and process the decision before the file is removed. The unlink error is swallowed silently in case the wrapper already cleaned it up or the file was removed manually.
+- **First pass:** deletes every `*.json` request file whose `mtime` is older than 1 hour, and also deletes the paired `*.decision.json` response file if it exists.
+- **Second pass:** deletes any remaining `*.decision.json` files older than 1 hour (even when the paired request file is still fresh — the decision is no longer needed once written).
 
-**Constraint:** Startup cleanup runs synchronously before `server.listen()` is called, ensuring the server does not bind until the cleanup is complete.
+Files newer than 1 hour are not touched (AC3). If `$SUPERVISOR_DECISIONS_DIR` is not set, empty, or does not exist, the function returns immediately without error (AC4). Per-file stat and unlink errors are caught individually so one unreadable file does not abort the rest of the sweep. Threshold: `Date.now() - mtime.getTime() > 60 * 60 * 1000`.
+
+**Post-approval cleanup:** When the console writes an approval response file via `POST /api/approve`, it schedules a cleanup timer with `setTimeout(() => unlink(decisionFile), 60_000)`. This gives the bash wrapper approximately 60 seconds to read and process the decision before the file is removed. The unlink error is swallowed silently in case the wrapper already cleaned it up or the file was removed manually.
+
+**Constraint (T8 AC5):** Startup cleanup runs synchronously before `server.listen()` is called, ensuring the server does not bind until the cleanup is complete.
 
 ---
 
@@ -423,10 +428,10 @@ curl -X POST http://127.0.0.1:7842/api/mailbox/unknown-agent
 # {"error": "unknown agent"}
 ```
 
-Valid agent names are those listed in `supervisor/fleet.conf`, e.g., `agent-be`, `agent-fe`, `agent-qa`, `agent-doc`.
+Valid agent names are those in the `validAgents` Set, which is loaded from `controlDir/fleet.conf` at startup (T11-amended AC1). If that file is absent, `validAgents` is empty and every agent name is rejected (T11-amended AC2). `supervisor/fleet.conf` is read only to locate agent log directories — it is not the source for name validation.
 
 **taskId validation (AC4/AC5):**
-Task identifiers must match the regex `/^[A-Z]+-[0-9]+$/` (uppercase letters, hyphen, digits only). This prevents path traversal via dot segments or slashes. Example validations:
+Task identifiers must match the regex `/^[A-Z]+(-[0-9]+|[0-9]+)$/` (uppercase letters followed by either a hyphen and digits, or digits only). This supports both `CONS-003` style and short-name `T13` style, while blocking path traversal via dot segments or slashes. Example validations:
 
 ```bash
 # AC4: Invalid format — path traversal attempt blocked
@@ -434,21 +439,29 @@ curl -X POST http://127.0.0.1:7842/api/unblock/../../etc/passwd
 # Response: HTTP 400
 # {"error": "invalid task ID"}
 
-# AC5: Valid format — proceeds to processing
+# AC5: Valid formats — both proceed to processing
 curl -X POST http://127.0.0.1:7842/api/unblock/CONS-003 \
+  -d '{"decision":"proceed"}'
+# Response: HTTP 200
+
+curl -X POST http://127.0.0.1:7842/api/unblock/T13 \
   -d '{"decision":"proceed"}'
 # Response: HTTP 200
 ```
 
 The regex rejects:
-- Lowercase letters: `cons-003` ✗
+- Lowercase letters: `cons-003` ✗, `t13` ✗
+- Mixed case: `Cons003` ✗
 - Dot segments: `../../../etc/passwd` ✗
 - Slashes: `CONS/003` ✗
-- No hyphen: `CONS003` ✗
 - Extra characters: `CONS-003!` ✗
+- Starts with a digit: `3CONS` ✗
 
-**Fleet.conf parsing (AC6):**
-At startup, `server.ts` reads `fleet.conf` and builds a Set of all agent names listed in the file. All agents listed in `fleet.conf` are immediately valid; no name rejection happens for legitimate agents. The Set is queried on every request to `/api/mailbox/:agentName`.
+**Fleet.conf parsing (AC6 / T11-amended AC1–AC3):**
+At startup, `server.ts` calls `rebuildValidAgents(controlDir)`, which reads `controlDir/fleet.conf` and builds `validAgents` — a `Set<string>` of all agent names listed in the file. All agents listed in `fleet.conf` are immediately valid. If `controlDir/fleet.conf` is absent or unreadable, `validAgents` is set to an empty `Set` and a warning is written to stderr; the server continues (T11-amended AC2). When the workspace changes (via `POST /api/workspace-switch`), `rebuildValidAgents` is called again with the new `controlDir`; if the new `fleet.conf` is absent, `validAgents` is emptied rather than kept from the previous workspace (T11-amended AC3). The Set is queried on every request to `/api/mailbox/:agentName`.
+
+**POST body validation — `readAndValidatePostBody` (T9 AC1/AC2):**
+All POST endpoints (`/api/mailbox/:agentName`, `/api/approve`, `/api/draft-decision`) call `readAndValidatePostBody(req)` before any filesystem or git operation. The function checks the `Content-Type` header (must include `application/json`) and parses the request body as JSON. A wrong content type or unparseable body produces an immediate HTTP 400 response. The function returns a discriminated union: `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure. Prior to T9, each handler read raw body bytes and called `JSON.parse` independently, and a missing `Content-Type` header was silently accepted.
 
 ### Implementation notes
 
@@ -532,37 +545,54 @@ This replaces the old `Console server listening on http://127.0.0.1:7842` messag
 
 ---
 
-## Mailbox push resilience — rebase-on-retry (v7.1)
+## Mailbox push resilience — fetch-reset-retry (T7)
 
-When multiple agents write to the control repository simultaneously, a push can be rejected if another agent's commit arrives first. To handle this gracefully, the `POST /api/mailbox` endpoint automatically retries failed pushes.
+When multiple agents write to the control repository simultaneously, a push can be rejected if another agent's commit arrives first. To handle this gracefully, `gitCommitAndPush` in `server-utils.ts` automatically retries failed pushes up to three times using a hard-reset sync strategy.
 
 ### Retry logic
 
-When the console publishes an agent's message to the mailbox:
+`gitCommitAndPush(controlDir, commitMessage)` runs the following sequence:
 
-1. **First push attempt.** The console commits the message to the control repo and pushes:
-   ```bash
-   git add mailboxes/<agent-name>.md
-   git commit -m "mailbox(<agent-name>): console message"
-   git push
-   ```
+1. **Stage all changes.** `git add -A` — stages every modified and untracked file in the working tree.
 
-2. **Rejection detected.** If the push fails (exit code 1 or 128), the console does NOT retry immediately. Instead:
-   - Log: `[gitCommitAndPush] push rejected (exit <code>), retrying with pull --rebase`
-   - Rebase locally against the remote branch: `git pull --rebase`
-   - Attempt push once more: `git push`
+2. **Commit.** `git commit -m <commitMessage>`. If the exit code is non-zero (e.g., "nothing to commit"), the function returns void without attempting a push.
 
-3. **Maximum one retry.** The retry count is hard-capped at 1. If rebase or the second push fails, the endpoint returns HTTP 500 with `{"error":"push failed after retry"}` and does NOT attempt further retries.
+3. **Push with up to 3 attempts.** For each attempt:
+   - `git push origin HEAD`
+   - If exit code 0 — success, return void immediately.
+   - If non-zero and more attempts remain:
+     ```bash
+     git fetch origin
+     git reset --hard origin/<branch>   # <branch> resolved at call start via git rev-parse
+     git add -A
+     git commit -m <commitMessage>
+     ```
+   - Then retry the push.
 
-4. **Success case — no rebase.** If the first push succeeds, the endpoint returns HTTP 200 immediately; no rebase is attempted (AC4 constraint — avoid unnecessary rebases when they're not needed).
+4. **After 3 failed push attempts**, throws `Error('git push failed after 3 retries')`.
 
-### Conflict handling
+### Subprocess timeout
 
-If the rebase encounters an irresolvable conflict (e.g., two agents edited the same mailbox file), `git pull --rebase` returns non-zero. The console catches this and returns HTTP 500 with the error message, leaving the working tree in a consistent state for recovery or manual inspection.
+Every git subprocess runs with a 30-second kill timeout. A subprocess that hangs is killed and its result is counted as a failure (exit code 1). This prevents a stalled network operation from blocking the event loop indefinitely.
+
+### Why fetch + reset --hard instead of pull --rebase
+
+`git pull --rebase` can leave the working tree in a detached-HEAD state when run non-interactively in CI and automated agent environments. The `fetch + reset --hard` pattern is deterministic: it discards any local-only divergence and aligns the branch exactly with the remote before re-committing. The console's use case (writing a single file and committing it) has no meaningful local-only state to preserve between retries.
 
 ### Operator impact
 
-Operators publishing messages via the console UI experience failures only when conflicts are genuinely unresolvable, not when they occur during brief windows of concurrent pushes. Temporary push rejections due to timing are handled transparently.
+Operators publishing messages via the console UI experience failures only after three genuine concurrent conflicts — rare under normal fleet operation. Temporary push rejections due to brief timing windows are handled transparently.
+
+### Test coverage
+
+| AC | Test | Location |
+|---|---|---|
+| AC1 | `gitCommitAndPush stages with git add -A and commits` | `server.test.ts` — `describe("gitCommitAndPush")` |
+| AC2 | `gitCommitAndPush retries with fetch+reset on push failure` | `server.test.ts` — first push fails; asserts fetch+reset+re-commit+push sequence |
+| AC3 | `gitCommitAndPush throws after 3 failed pushes` | `server.test.ts` — all 3 pushes fail; asserts Error thrown |
+| AC4 | `gitCommitAndPush resolves void on success` | `server.test.ts` — happy path |
+| AC5 | `gitCommitAndPush resolves void when nothing to commit` | `server.test.ts` — commit exits 1; asserts no push attempted |
+| AC6 | 30s kill timeout on each Bun.spawn call | PR review (human-verify) |
 
 ---
 
@@ -610,70 +640,58 @@ Operators see a blocked-command card in the console UI when a high-risk command 
 
 ---
 
-## AI Draft Suggestions — streaming Claude responses via SSE (v7.1)
+## Human notes to agents — POST /api/draft-decision (T5 / T9)
 
-The console lets operators request AI-drafted suggestions for blocked tasks, streaming Claude's response token-by-token via Server-Sent Events (SSE). This endpoint integrates with the Anthropic SDK and aborts the stream if the browser disconnects, preventing wasted token consumption.
+The console lets operators send a note directly into an agent's mailbox, tied to a specific task. The server validates the request, appends a formatted block to the agent's mailbox file in the control repo, and commits the change. This replaces the earlier CONS-005 Anthropic SDK SSE stub, which was a placeholder. The endpoint is now a plain JSON endpoint with no streaming and no external API dependency.
 
 ### Request and response
 
 **Endpoint:** `POST /api/draft-decision`
 
+**Required headers:** `Content-Type: application/json`
+
 **Request body:**
 ```json
 {
-  "taskId": "CONS-005",
   "agentName": "agent-be",
-  "context": "Task spec and agent notes..."
+  "taskId": "T9",
+  "text": "Please use the pattern from server-utils.ts for the new endpoint."
 }
 ```
 
-**Response:** HTTP 200 with `text/event-stream` (SSE format). Each token arrives as a `data:` line containing a JSON-escaped string:
-```
-data: "The "
-data: "operator "
-data: "can "
-data: "review "
-data: "and "
-data: "edit "
-data: "this "
-data: "draft "
-data: "before "
-data: "submitting."
-data: [DONE]
-```
-
-### Error handling
-
-If `ANTHROPIC_API_KEY` is not set in the server environment, the endpoint returns HTTP 503 immediately (before reading the body):
+**Response:** HTTP 200 JSON on success:
 ```json
-{
-  "error": "AI drafts unavailable — set ANTHROPIC_API_KEY in your environment"
-}
+{ "ok": true }
 ```
 
-If the Anthropic API returns an error during streaming (invalid key, rate limit, etc.), the stream sends an error event and closes gracefully:
+### Validation
+
+All three fields are required. The server applies the following checks in order and returns immediately on the first failure:
+
+1. `Content-Type` header must include `application/json` — returns 400 with `{ "error": "content-type must be application/json" }` if not.
+2. Request body must be valid JSON — returns 400 with `{ "error": "invalid JSON body" }` if not.
+3. `agentName` must be a member of `validAgents` (loaded from `controlDir/fleet.conf`) — returns 400 with `{ "error": "unknown agent" }` if not.
+4. `taskId` must match `TASK_ID_RE` — returns 400 with `{ "error": "invalid taskId" }` if not.
+5. `text` must be a non-empty string — returns 400 with `{ "error": "text required" }` if not.
+6. `controlDir` must be configured — returns 503 with `{ "error": "control dir not configured" }` if not.
+
+### Mailbox append format
+
+The appended block uses the standard agent-loop mailbox format:
+
 ```
-data: {"error": "invalid API key"}
+## from: human | <ISO-timestamp> | re: <taskId>
+<text>
 ```
 
-The server process does not crash.
+The file written is `$controlDir/mailboxes/<agentName>.md`. After appending, the server calls `gitCommitAndPush(controlDir, "console: note for <agentName> re <taskId>")`. If the push fails, the endpoint returns HTTP 500 with `{ "error": "git push failed" }`.
 
-### Disconnection handling
+### AC → verification mapping
 
-When the browser closes the connection or the user cancels the request mid-stream, the `req.on("close")` callback triggers `AbortController.abort()`. This immediately stops the Anthropic SDK stream, preventing further token consumption. The server logs no additional output after disconnect.
-
-### Implementation details
-
-- **Model:** `claude-haiku-4-5-20251001` (Haiku for cost control — draft suggestions don't need Opus)
-- **Max tokens:** 512 per response
-- **Abort signal:** Passed to `client.messages.stream({..., signal: controller.signal})`
-- **Streaming handler:** `stream.on("text", ...)` catches each token and writes it as an SSE `data:` line
-- **Completion sentinel:** Final `data: [DONE]\n\n` event signals end of stream
-- **Content type:** Operator supplies `context` (task spec + agent notes) in request body; no hardcoded prompt template
-
-### Use case
-
-When a task is blocked waiting for human decision (e.g., approval request, merge conflict), an operator can click "AI Draft" to get a Claude suggestion. The response appears token-by-token in the console, allowing the operator to review and edit before submitting. If the operator cancels mid-draft or closes the console tab, no additional tokens are charged.
+| AC | Test | Location |
+|---|---|---|
+| AC1 — malformed body → 400 | `describe("malformed JSON body (AC1)")` — draft-decision test | `server.test.ts` |
+| AC2 — missing Content-Type → 400 | `describe("missing Content-Type (AC2)")` — draft-decision test | `server.test.ts` |
 
 ---
 
@@ -685,48 +703,60 @@ The console delivers live agent events to connected browsers without polling, us
 
 1. **Server startup.** When `console/server.ts` starts, it reads the agent list from `fleet.conf`. For each agent, it:
    - Creates the log directory if missing (`~/agents/<agent>/logs/` with `mkdir -p`)
-   - Registers an `fs.watch` callback on that directory
+   - Registers an `fs.watch` callback on that directory via `makeWatchHandler(agent, logDir, broadcast, lastEventCache)`
 
-2. **Live-events.jsonl watching.** When an agent appends a line to its `live-events.jsonl`, the `fs.watch` callback detects the write and triggers a broadcast within <1s.
+2. **Live-events.jsonl watching (AC2).** When an agent appends a line to its `live-events.jsonl`, the `fs.watch` callback reads the last JSON line, extracts `{ task, tool, summary }`, and broadcasts a named `event: fleet-update` SSE frame with payload `{ type: "fleet-update", agent, task, tool, summary, ts }`. The payload is also cached in `lastEventCache` (a `Map<agent, payload>`) for Last-Event-ID replay. Unreadable files (ENOENT, permission error) are silently skipped — the watcher stays active (AC3).
 
-3. **SSE endpoint.** The `/api/events` endpoint accepts HTTP GET and streams a `ReadableStream<Uint8Array>` to connected browsers. Each browser tab gets its own controller in the `sseClients` Set.
+3. **live.json watching.** When `live.json` changes (agent state change), the callback broadcasts a minimal `event: fleet-update` frame with payload `{ type: "fleet-update", agent, ts }`. The browser reacts to the event type and re-fetches `/api/fleet` to get the latest state.
 
-4. **Broadcast to all clients.** When a change is detected, the `broadcast()` function encodes the event and sends it to all connected controllers. Dropped connections are cleaned up automatically.
+4. **SSE endpoint (AC1).** The `/api/events` endpoint accepts HTTP GET and upgrades the connection to a streaming Server-Sent Events response. It sets headers `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, then immediately flushes an initial `: ok\n\n` comment line to prevent proxy buffering. Each browser tab gets its own `ServerResponse` in the `sseClients` Set.
+
+5. **Last-Event-ID replay (AC4).** On reconnect, if the request carries a `Last-Event-ID` header, the server immediately replays the last known `fleet-update` payload for every agent from `lastEventCache`. If an agent has no cached payload (e.g., no `live-events.jsonl` write since startup), it is skipped.
+
+6. **Broadcast to all clients.** When a change is detected, `broadcast(frame)` iterates `sseClients` and writes the complete SSE frame directly to each `ServerResponse`. If a write throws (closed socket), that client is removed from the set.
+
+7. **Keep-alive pings (AC6).** After adding a client to `sseClients`, a `setInterval` runs every 30 seconds writing `: ping\n\n` to the connection. If the write throws, the client is removed and the interval is cleared.
+
+8. **Client disconnect (AC5).** When the SSE connection closes (`req.on("close")`), the server removes the `ServerResponse` from `sseClients` and clears the ping interval. Subsequent broadcasts skip that client.
 
 ### Implementation
 
 - **Watcher count:** One `fs.watch()` call per agent in `fleet.conf` (typically 4: agent-be, agent-fe, agent-qa, agent-doc)
-- **Event filtering:** Only `live-events.jsonl` changes trigger broadcasts; other files in the log directory are ignored
-- **Client registry:** `sseClients` is a `Set<ReadableStreamDefaultController>` populated at `/api/events` GET, cleaned up on disconnect or error
-- **Broadcast format:** Each event is encoded as `data: <json>\n\n` where the JSON includes `{ agent, file, ts }`
-- **Fallback:** The browser (`index.html`) uses htmx 5s polling as a reconnection fallback; this SSE path handles the push case
+- **Event filtering:** `live-events.jsonl` changes broadcast a full payload `{ type, agent, task, tool, summary, ts }`; `live.json` changes broadcast a minimal `{ type, agent, ts }`; all other files are ignored
+- **Client registry:** `sseClients` is a `Set<ServerResponse>` (Node.js `http.ServerResponse`) populated at `/api/events` GET, cleaned up on disconnect or write error
+- **Broadcast format:** Named SSE frames — `event: fleet-update\ndata: <json>\n\n`
+- **Initial heartbeat:** `: ok\n\n` comment line sent immediately after headers (prevents proxy buffering, per AC1)
+- **Reconnect replay:** `lastEventCache` is a `Map<string, string>` at module level; cleared on server restart, not persisted. Replayed on reconnect when `Last-Event-ID` header is present
+- **Keep-alive interval:** 30-second `: ping\n\n` comment per client; interval cleared on disconnect
+- **Error resilience:** Silent `catch` in `makeWatchHandler` for `live-events.jsonl` reads — ENOENT or permission errors skip the broadcast without rethrowing
 
 ### Use case
 
-When an agent writes an approval request or task log line, the console receives it within 1 second on all open browser tabs without a page reload.
+When an agent writes a log line to `live-events.jsonl`, the console receives the structured event within 1 second on all open browser tabs, without a page reload.
 
 ---
 
 ## Tab navigation and panel switching (v7.1)
 
-The console UI organizes control surfaces into three tabs: **Fleet**, **Queue**, and **Cost**. Each tab is a distinct panel; clicking a tab switches which panel is visible while keeping others hidden.
+The console UI organizes control surfaces into four tabs: **Fleet**, **Queue**, **Pipeline**, and **Cost**. Each tab is a distinct panel; clicking a tab switches which panel is visible while keeping others hidden.
 
 ### Tabs and panels
 
 - **Fleet tab** — Shows agent fleet status (agent names, states, current task, elapsed time, recent tool use)
 - **Queue tab** — Shows pending tasks awaiting approval (the approval section from earlier sections)
+- **Pipeline tab** — Shows all ledger tasks grouped by status (In progress / Blocked / Open / Done), with domain filter chips and a spec panel that opens on card click (T13)
 - **Cost tab** — Placeholder for operational cost tracking (not yet implemented; currently shows static text)
 
 ### Implementation
 
-The console UI (`console.js`) renders a `<nav role="tablist">` element with three `<button role="tab">` elements (one per tab). When a tab is clicked:
+The console UI (`console.js`) renders a `<nav role="tablist">` element with four `<button role="tab">` elements (one per tab). When a tab is clicked:
 
 1. The `onclick` handler finds the corresponding panel element (e.g., `<section id="section-fleet">`)
 2. Sets `hidden` attribute on the previously active panel
 3. Removes `hidden` attribute from the new panel
 4. Updates the active button's `aria-selected` state and styling
 
-Each panel (`section-fleet`, `section-queue`, `section-cost`) is a sibling `<section>` in the DOM. CSS media queries and design tokens ensure tab buttons are styled consistently with the rest of the console.
+Each panel (`section-fleet`, `section-queue`, `section-pipeline`, `section-cost`) is a sibling `<section>` in the DOM. CSS media queries and design tokens ensure tab buttons are styled consistently with the rest of the console.
 
 ---
 
@@ -738,11 +768,11 @@ The **Fleet tab** displays a real-time table of all agents in the fleet. Each ro
 
 | Column | Content | Source | Updates |
 |--------|---------|--------|---------|
-| Agent | Agent name (e.g., "agent-be", "agent-qa") | `fleet.conf` / API response | Static per session |
+| Agent | Agent name with 32×32 Dicebear initials avatar | `fleet.conf` / API response | Static per session |
 | State | Badge: **WORKING** (green) or **IDLE** (amber) | `presence/<agent>.json` | On state change; <1s via SSE |
 | Task | Task ID (e.g., "CONS-015") or "—" if no tasks | `live.json` task field | On task change; <1s via SSE |
 | Started | ISO timestamp when agent session started | `live.json` sessionStart | On session change; <1s via SSE |
-| Elapsed | Human-readable duration (e.g., "2m 15s") | Calculated: now - sessionStart | Every 5s (client-side timer) |
+| Elapsed | Human-readable duration (e.g., "2m 15s") | Calculated: now - sessionStart | Every 10s (client-side timer) |
 | Last tool | Tool name (e.g., "Read", "Edit", "Bash") | `live.json` lastTool | On tool change; <1s via SSE |
 | Summary | One-line task description | `live.json` lastSummary | On summary change; <1s via SSE |
 
@@ -761,11 +791,12 @@ When the console loads or receives a `fleet-update` SSE event, it calls `renderF
 
 1. Fetches `GET /api/fleet` (async JSON response)
 2. For each agent in the response, renders a table row with formatted columns:
-   - Elapsed time is recalculated as `Date.now() - new Date(sessionStart).getTime()`
+   - Avatar: constructs a Dicebear URL from `a.name`, renders `<img class="fleet-avatar">`. On `onerror`, reveals `.fleet-avatar-fallback` (grey circle `<div>`) instead.
+   - Elapsed time base: `baseTs` (from the `fleet-update` SSE event's `ts` field) when available, falling back to `Date.parse(a.sessionStart)` on the initial page load fetch
    - State badge CSS class is determined by the `state` field
    - Task ID defaults to "—" if missing
 3. Replaces the old table with the new one (preserving scroll position when possible)
-4. The elapsed-time columns continue to update every 5 seconds via client-side `setInterval` timer (independent of SSE updates)
+4. The elapsed-time columns continue to update every 10 seconds via client-side `setInterval` timer (independent of SSE updates)
 
 ---
 
@@ -792,7 +823,8 @@ This dual mechanism ensures the fleet table stays fresh even if the SSE connecti
 ### Implementation
 
 - **SSE event type:** `fleet-update` (sent by server, received by browser)
-- **Event payload:** Empty; browser reacts to the event type, not the body
+- **Event payload:** Two shapes depending on trigger file. `live-events.jsonl` change: `{ type: "fleet-update", agent, task, tool, summary, ts }`. `live.json` change: `{ type: "fleet-update", agent, ts }`. Browser uses the event type as a trigger to re-fetch `/api/fleet`; payload fields are not parsed by the client
+- **Last-Event-ID replay:** On reconnect with a `Last-Event-ID` header, the server immediately replays the last known `fleet-update` payload for every agent from `lastEventCache`. Agents with no cached payload are skipped
 - **Fallback timer:** `setInterval` every 30 seconds (`FLEET_STALE_MS = 30000`)
 - **Timer reset:** Triggered by SSE event AND by successful fetch completion in `renderFleet()`
 
@@ -874,7 +906,22 @@ The console lets operators query the current state of all agents in the fleet, s
 
 ### SSE fleet-update events
 
-When `live.json` changes for any agent in the fleet, the fs.watch callback broadcasts a `fleet-update` event:
+The server emits named `event: fleet-update` SSE frames on two triggers. The payload shape differs by source file:
+
+**`live-events.jsonl` change** — last JSON line parsed, full payload broadcast:
+
+```javascript
+{
+  "type": "fleet-update",
+  "agent": "agent-be",
+  "task": "T4",
+  "tool": "Bash",
+  "summary": "Running tests",
+  "ts": 1718909802000
+}
+```
+
+**`live.json` change** — minimal payload broadcast (agent state change, triggers re-fetch):
 
 ```javascript
 {
@@ -884,7 +931,7 @@ When `live.json` changes for any agent in the fleet, the fs.watch callback broad
 }
 ```
 
-The console client receives this event and re-fetches `/api/fleet` to reflect the latest state. This eliminates the need for polling and keeps the fleet status table synchronized with agent activity in real-time.
+The console client receives either event type and re-fetches `/api/fleet` to reflect the latest state. This eliminates the need for polling and keeps the fleet status table synchronized with agent activity in real-time.
 
 ### Data fields reference
 
@@ -897,6 +944,371 @@ The console client receives this event and re-fetches `/api/fleet` to reflect th
 | `lastTool` | `live.json` .last_tool field | string \| null | Last tool called by the agent (e.g., "Bash", "Read", "Edit"); null if no session |
 | `lastSummary` | `live.json` .last_summary field | string \| null | Last summary or status message from the agent; null if no session |
 | `ended` | `live.json` .ended field | boolean | True if the session has ended, false if currently active |
+
+---
+
+## Fleet control endpoints (T11)
+
+Operators can stop, restart, pause, or resume any agent directly from the Fleet tab. The four `POST /api/fleet/*` endpoints send OS-level signals to the agent process, whose PID is read from `supervisor/pids/{agentName}.pid` — a file written by `run-agent.sh` when it spawns Claude.
+
+### Endpoints
+
+| Endpoint | Action | Signal(s) | Returns |
+|---|---|---|---|
+| `POST /api/fleet/stop?agent=<name>` | Graceful stop | SIGTERM; SIGKILL after 5 s if still alive | `{ ok: true }` |
+| `POST /api/fleet/restart?agent=<name>` | Stop then re-launch | SIGTERM / SIGKILL (per stop), then spawns `run-agent.sh <name>` | `{ ok: true }` immediately after spawn |
+| `POST /api/fleet/pause?agent=<name>` | Suspend execution | SIGSTOP | `{ ok: true }` |
+| `POST /api/fleet/resume?agent=<name>` | Resume execution | SIGCONT | `{ ok: true }` |
+
+### How stop works
+
+`stopProcess(pid, opts)` in `server-utils.ts` is an async function that:
+
+1. Checks process liveness via `process.kill(pid, 0)` (signal 0 — no effect, ESRCH if not found).
+2. If already dead: returns immediately. No signal sent. This covers both the stale-PID case (AC6) and the idempotent double-stop case (AC8).
+3. Sends SIGTERM.
+4. Starts a 50 ms poll loop checking liveness every 50 ms.
+5. If the process has not exited after `stopTimeoutMs` (default 5000 ms), sends SIGKILL and resolves.
+6. If the process exits before the timeout fires, clears the timer and resolves.
+
+`restart` (T15-amended) first checks whether the agent holds a claimed ledger task by calling `parseTaskLedger(join(controlDir, "ledger"))` and finding an entry where `claimed_by === agentName`. If one exists, it calls `spawnSync(join(controlDir, "kernel", "task"), ["fail", taskId, "--agent", agentName, "--role", "human"])` to record the failure as human-initiated. If that subprocess exits non-zero, the handler returns HTTP 500 `{ error: "kernel/task fail exited with code N" }` and aborts without restarting. If no claimed task exists, the fail step is skipped. After the fail step (or skip), `restart` calls `stopProcess` then spawns `run-agent.sh <agentName>` as a detached subprocess with `stdio: 'ignore'` and calls `proc.unref()`, so the console server does not wait for or track the new Claude session.
+
+### Error responses
+
+| Condition | Status | Body |
+|---|---|---|
+| `agentName` not in `validAgents` (from `controlDir/fleet.conf`) | 400 | `{ error: 'unknown agent' }` |
+| PID file does not exist at `pids/{agentName}.pid` | 404 | `{ error: 'pid file not found' }` |
+| Process is not running — pause or resume only (AC6) | 409 | `{ error: 'process not running' }` |
+| `kernel/task fail` exits non-zero — restart only (T15-amended AC3) | 500 | `{ error: 'kernel/task fail exited with code N' }` |
+
+For `stop` and `restart`, a stale PID (process already exited) is handled silently — `stopProcess` returns immediately and the response is `{ ok: true }`. This makes `stop` idempotent (AC8).
+
+### SSE broadcast after stop and restart (AC7)
+
+After `stopProcess` resolves (and after `run-agent.sh` is spawned for restart), the server broadcasts a `fleet-update` SSE event to all connected browsers:
+
+```json
+{
+  "type": "fleet-update",
+  "agent": "agent-be",
+  "action": "stop",
+  "ts": 1718909802000
+}
+```
+
+The `action` field is `"stop"` or `"restart"`. `pause` and `resume` do not broadcast — they are silent, low-latency operations.
+
+### Implementation constraints
+
+- PID file path: `join(supervisorDir, 'pids', '{agentName}.pid')`. `supervisorDir` is `dirname(__dirname)` (the directory containing `console/`) — never hardcoded.
+- `readPidFile` returns `null` for missing files, unreadable files, and non-positive integer content. The server returns 404 when `readPidFile` returns `null`.
+- Signal calls are wrapped in `try/catch` — the process may exit between the liveness check and the `process.kill` call.
+- macOS only: Windows process signals are out of scope.
+
+### AC → verification mapping
+
+| AC | What it tests |
+|---|---|
+| AC1 | `stopProcess` sends SIGTERM first, then SIGKILL after timeout when process stays alive |
+| AC2 | `POST /api/fleet/restart` stops the agent then spawns `run-agent.sh <agentName>` (T15-amended: preceded by `kernel/task fail --role human` when a claimed task exists) |
+| AC3 | `POST /api/fleet/pause` sends SIGSTOP to the agent's PID |
+| AC4 | `POST /api/fleet/resume` sends SIGCONT to the agent's PID |
+| AC5 | Unknown agent name → 400 on all four endpoints |
+| AC6 | Stale PID: stop → 200 (no signal); pause/resume → 409 |
+| AC7 | `fleet-update` SSE event broadcast after stop and restart; NOT after pause |
+| AC8 | Double stop when process is dead → 200 both times |
+
+---
+
+## Fleet control — validAgents hardening (T11-amended)
+
+T11 used `supervisor/fleet.conf` (the file that lists all agents for log-watcher setup) as the source for `validAgents`. T11-amended removes that shim: `validAgents` is now built exclusively from `controlDir/fleet.conf` — the fleet.conf inside the control repo checkout, which is the authoritative source of agent registration.
+
+### What changed
+
+| Component | Before (T11) | After (T11-amended) |
+|---|---|---|
+| `validAgents` source | `supervisor/fleet.conf` (hardcoded path) | `controlDir/fleet.conf` (workspace-resolved at runtime) |
+| Missing `fleet.conf` at startup | Fatal — server exited with error | Non-fatal — `validAgents` emptied, warning to stderr, server continues |
+| Workspace switch | Not supported | `rebuildValidAgents(newControlDir)` called; if new file absent, `validAgents` emptied |
+| `GET /api/fleet` agent list | `agentList` from supervisor fleet.conf | `[...validAgents]` from control fleet.conf |
+
+### rebuildValidAgents
+
+`rebuildValidAgents(dir: string)` is a module-level function in `server.ts`:
+
+```typescript
+function rebuildValidAgents(dir: string): void {
+  if (!dir) { validAgents = new Set(); return; }
+  const confPath = join(dir, "fleet.conf");
+  try {
+    validAgents = new Set(parseFleetConf(readFileSync(confPath, "utf8")));
+  } catch {
+    process.stderr.write(`WARNING: fleet.conf not found at ${confPath} — no agents valid\n`);
+    validAgents = new Set();
+  }
+}
+```
+
+It is called:
+1. Once at startup with the resolved `controlDir`.
+2. On `POST /api/workspace-switch` with the new `controlDir` from the request body.
+
+### supervisorAgentList — separation of concerns
+
+The `supervisorAgentList` (read from `supervisor/fleet.conf`) is kept as a separate, startup-only list used exclusively for log-watcher directory setup. It is never used for request validation. This separation means the log-watchers continue to cover all agents even if the workspace has no fleet.conf.
+
+### AC → verification mapping
+
+| AC | What it tests |
+|---|---|
+| AC1 | No hardcoded agent list remains in `server.ts`; `validAgents` built from `parseFleetConf(readFileSync(join(controlDir, 'fleet.conf'), 'utf-8'))` |
+| AC2 | Missing `controlDir/fleet.conf` → `validAgents` empty → any `POST /api/mailbox/:name` returns 400 |
+| AC3 | `POST /api/workspace-switch` with a new `controlDir` rebuilds `validAgents`; switching to a workspace with absent fleet.conf empties `validAgents` |
+| AC4 | `GET /api/fleet` returns only agents present in `validAgents`; returns empty array when `validAgents` is empty |
+
+---
+
+## Stuck detection engine (T14)
+
+The console can detect when an agent is stuck — claimed on a task but showing no observable progress — and report it via `GET /api/stuck`. Three signal types cover the most common failure modes. A `stuck` SSE event fires edge-triggered when a new signal is detected for an agent, at most once per 60-second evaluation window.
+
+### Signal types
+
+| Signal | Detection rule | `detail` format |
+|---|---|---|
+| `fail_storm` | Agent's current task has `failure_count >= 2` and `status` is not `needs_human` or `awaiting_info` | `"{N} failed attempts"` |
+| `loop` | Last 5 valid JSONL events in `live-events.jsonl` all share the same non-null `tool` field | `"looping on {tool}"` |
+| `silent` | `ts` of the last valid JSONL event is more than 600 seconds before `Date.now()` | `"silent for {X}m"` |
+
+**Signal precedence:** `fail_storm` > `loop` > `silent`. When multiple signals would fire for the same agent, only the highest-precedence one is reported.
+
+**Idle suppression (AC8):** Agents whose current task `status` is `needs_human`, `awaiting_info`, `complete`, or `open` are excluded from all stuck checks. They are already in human hands or have no active claim.
+
+### GET /api/stuck (AC1)
+
+**Endpoint:** `GET /api/stuck`
+
+**Response:** HTTP 200 with `Content-Type: application/json`:
+
+```json
+{
+  "stuck": [
+    {
+      "agent": "agent-be",
+      "signal": "fail_storm",
+      "detail": "3 failed attempts",
+      "since": "2026-06-23T08:00:00.000Z"
+    },
+    {
+      "agent": "agent-fe",
+      "signal": "silent",
+      "detail": "silent for 15m",
+      "since": "2026-06-23T08:00:00.000Z"
+    }
+  ]
+}
+```
+
+The endpoint never returns 500. A missing or unreadable log file for one agent causes that agent to be skipped gracefully; signals for other agents are still returned (AC6).
+
+### computeStuckSignals() — server-utils.ts
+
+`computeStuckSignals(agents, agentsHome, ledgerDir, nowMs?)` is the pure utility underlying the endpoint:
+
+1. **Reads the ledger** via `parseTaskLedger(ledgerDir)` to build a map of `agent → { failureCount, status }` for all currently claimed tasks.
+2. **For each agent** in the `agents` list:
+   - Checks AC8 idle suppression first — skips agents in terminal/waiting statuses.
+   - Checks `fail_storm` — highest precedence, no JSONL read needed.
+   - Reads `~/agents/{agent}/logs/live-events.jsonl` using `readFileSync` + `split("\n").slice(-20)`. Missing or unreadable file → `catch` block → `continue` to next agent (AC6).
+   - Parses each of the last 20 lines with `try { JSON.parse(line) } catch { return null }` then filters nulls — one malformed line does not throw or truncate results (AC5).
+   - Checks `loop`: if at least 5 valid events exist and the last 5 all share the same non-null `tool`, emits `loop`.
+   - Checks `silent`: if the last valid event's `ts` is more than `STUCK_SILENT_SECONDS` (600) seconds before `nowMs`, emits `silent`.
+3. Returns `StuckAgent[]` — one entry per stuck agent.
+
+The `nowMs` parameter is injectable for deterministic test control.
+
+### Edge-triggered SSE broadcast (AC7)
+
+Each call to `GET /api/stuck` also runs the SSE broadcast logic in `server.ts`:
+
+- **`prevStuckSignals`** — a module-level `Map<string, string>` (agent → last reported signal). Cleared on server restart.
+- **`lastStuckBroadcast`** — a module-level `Map<string, number>` (agent → last broadcast timestamp ms). Cleared on server restart.
+- A `stuck` SSE event fires for an agent only when: (1) the new signal differs from the previous signal, AND (2) at least 60 seconds have elapsed since the last broadcast for that agent.
+
+```
+event: stuck
+data: {"agent":"agent-be","signal":"fail_storm","detail":"3 failed attempts"}
+```
+
+The event fires at most once per 60-second window per agent, even if the endpoint is polled more frequently. Agents that are no longer stuck are removed from `prevStuckSignals` on the next evaluation.
+
+### AC → verification mapping (T14)
+
+| AC | Verified by |
+|---|---|
+| AC1 | `describe("GET /api/stuck")` — response is HTTP 200 JSON with `stuck` array; each entry has `agent`, `signal`, `detail`, `since` string fields |
+| AC2 | Test writes JSONL event 11 minutes ago; asserts `signal=silent`, `detail` contains `"11m"` |
+| AC3 | Test writes 5 JSONL events with `tool: "Edit"`; asserts `signal=loop`, `detail="looping on Edit"` |
+| AC4 | Test writes ledger with `failure_count=2`, `status=in_progress`; asserts `signal=fail_storm`, `detail="2 failed attempts"` |
+| AC5 | Test injects `}{broken json line` before a valid old JSONL line; asserts HTTP 200, valid array, silent signal for the agent |
+| AC6 | Test agent `stuck-missing` has no `live-events.jsonl`; asserts it is absent from stuck array, other agents still present, no 500 |
+| AC7 | Two sequential calls to an isolated edge server; asserts broadcast fires exactly once on the first call, zero times on the second (same signal) |
+| AC8 | Test writes ledger with `status=needs_human`, `failure_count=3`; asserts agent absent from stuck list |
+
+### AC → verification mapping (T14-amended)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | PR review — `grep 'JSON.parse' supervisor/console/server-utils.ts` confirms all JSONL-line parsing in `readLogTail` and `computeStuckSignals` is wrapped in per-line try/catch returning null | human-verify |
+| AC2 | `describe("stuck detection malformed JSONL")` — 20-line fixture with malformed lines at positions 4, 11, 17; asserts `signal=loop` (loop detected from 17 valid Bash events) | done_check |
+| AC3 | Same describe block — `GET /api/stuck` returns HTTP 200 even when JSONL contains malformed lines; no 500 | done_check |
+| AC4 | Same describe block — all-malformed JSONL file (`}{broken` × 5); asserts `{ stuck: [] }` HTTP 200 | done_check |
+| AC5 | PR review — grep across `server.ts` and `server-utils.ts` confirms no bare `JSON.parse` call on JSONL line content (all are on full-file `readFileSync` results or request body buffers, which use separate error handling) | human-verify |
+
+---
+
+## Stuck alert UI (T15)
+
+T15 wires the `GET /api/stuck` endpoint (T14) into the console frontend. When one or more agents are stuck, a red alert card appears above the Queue attention section without navigating away from the current tab. Clicking "Force restart" opens a native `<dialog>` confirm modal that POSTs to the T11 restart endpoint.
+
+### Stuck alert slot
+
+A `<section id="stuck-alert-slot">` is placed immediately above `section-attention` in `index.html`. It carries `aria-live="assertive"` so screen readers announce new stuck alerts and starts `hidden`. `console.js` manages visibility:
+
+- `hidden` attribute present → card section is not shown (zero agents stuck)
+- `hidden` attribute removed → section visible, contains one `<article class="stuck-alert-card">`
+
+The slot is permanent in the DOM across all tab switches — it is not inside any tab panel.
+
+### State
+
+Two module-level Maps track stuck state:
+
+| Map | Key | Value | Purpose |
+|---|---|---|---|
+| `stuckAgents` | agent name | `{ agent, signal, detail, since }` | Current set of stuck agents (entry present = stuck) |
+| `agentLastTaskId` | agent name | task ID string | Last `task` field seen in a `fleet-update` SSE event — used for AC6 auto-dismiss comparison |
+
+### Bootstrap and SSE
+
+On page load, `fetchStuck()` calls `GET /api/stuck` and populates `stuckAgents` from the response array, then calls `renderStuckSection()`. `fetchStuck()` is also called in the SSE `open` handler so stuck state is refreshed on reconnect.
+
+The `stuck` SSE event (`event: stuck`) is handled separately:
+
+```js
+es.addEventListener('stuck', (e) => {
+  const ev = JSON.parse(e.data);
+  if (!ev.agent) return;
+  stuckAgents.set(ev.agent, { agent: ev.agent, signal: ev.signal, detail: ev.detail, since: ev.since || new Date().toISOString() });
+  renderStuckSection();
+});
+```
+
+`since` falls back to `new Date().toISOString()` if the SSE payload omits it (the T14 SSE payload does not include `since`; only the REST response does).
+
+### Rendering — AC3 (one card, earliest since)
+
+`renderStuckSection()` selects the agent with the earliest (oldest) `since` timestamp and renders exactly one card. If more than one agent is stuck, a `+N more` badge is appended to the card header where N = total stuck count − 1:
+
+```html
+<span class="stuck-more-badge" aria-label="2 more stuck agents">+2 more</span>
+```
+
+The card structure (`buildStuckCard()`):
+
+```
+<article class="stuck-alert-card card-new" id="stuck-{agentName}" aria-label="Stuck agent: {agent}">
+  <div class="stuck-card-header">
+    <span class="stuck-signal-dot" />   <!-- pulsing red dot -->
+    <span class="stuck-agent-name">{agent}</span>
+    [+N more badge if multi]
+    <span class="stuck-card-spacer" />
+    <span class="stuck-since">{relativeTime(since)}</span>
+  </div>
+  <div class="stuck-detail">{detail}</div>
+  <div class="stuck-card-actions">
+    <button class="btn-force-restart" data-agent="{agent}">Force restart</button>
+  </div>
+</article>
+```
+
+The `id="stuck-{agentName}"` attribute ensures DOM deduplication — `renderStuckSection()` replaces the container's `innerHTML` on every update.
+
+### Auto-dismiss — AC6
+
+The `fleet-update` SSE handler checks every incoming event against `stuckAgents`. If the update carries a new `task` value (agent moved on) or an `action` of `stop` or `restart`, `dismissStuckAgent(agent)` is called:
+
+```js
+const movedOn = ev.task != null && ev.task !== prev;
+const stopped = ev.action === 'stop' || ev.action === 'restart';
+if (movedOn || stopped) dismissStuckAgent(ev.agent);
+```
+
+`dismissStuckAgent()` removes the agent from `stuckAgents`, applies the `card-exit` animation (same as other card removals), then calls `renderStuckSection()` to show the next-earliest stuck agent if any remain.
+
+### Force restart modal — AC4/AC5/AC7/AC8
+
+The modal is a native `<dialog id="restart-modal">` element placed after the `</div>` closing tag of the page body and before `<script src="console.js">`:
+
+```html
+<dialog id="restart-modal" class="restart-modal" aria-labelledby="restart-modal-heading">
+  <h2 class="restart-modal-heading" id="restart-modal-heading">Restart agent?</h2>
+  <p class="restart-modal-body"></p>
+  <div class="restart-modal-actions">
+    <button class="btn-modal-cancel">Cancel</button>
+    <button class="btn-modal-restart btn-danger">Restart agent</button>
+  </div>
+</dialog>
+```
+
+`initRestartModal()` (called once on page load after the script is parsed) wires up three close paths (AC7):
+
+| Interaction | Handler |
+|---|---|
+| Backdrop click | `modal.addEventListener('click', e => { if (e.target === modal) modal.close(); })` |
+| Cancel button | `btn-modal-cancel` click → `modal.close()` |
+| Escape key | Native `<dialog>` behavior — no handler required |
+
+`showRestartModal(agent)` populates the modal before opening it (AC4):
+
+- Heading: `Restart {agent}?`
+- Body: `Current task {task_id} will be marked failed. This cannot be undone.` — `task_id` is read from `agentLastTaskId.get(agent)` or `"current task unknown"` if not yet seen.
+- Restart button label: `Restart {agent}`
+
+On confirm (AC5), the restart button:
+
+1. Sets `btn.textContent = 'Restarting…'` and `btn.disabled = true`
+2. POSTs to `/api/fleet/restart?agent={encodeURIComponent(agent)}`
+3. Calls `modal.close()` in `.finally()` regardless of fetch outcome
+
+`<dialog>.showModal()` provides native focus trapping — tab focus cannot leave the modal while it is open (AC8 constraint satisfied automatically).
+
+### Styles
+
+T15 adds two new style blocks to `styles.css`:
+
+**`.stuck-alert-card`** — red left/top accent, surface background, with `.stuck-signal-dot` (`@keyframes stuckPulse` at 1.6 s, red fill). `.stuck-more-badge` uses `color-mix(in srgb, var(--red) 15%, transparent)` for a muted red chip. `.btn-force-restart` matches the badge treatment with a 1 px red border and hover darkening.
+
+**`.restart-modal`** — inherits surface background and border tokens; `::backdrop` is `rgba(0,0,0,0.7)`. `.btn-danger` uses the same `color-mix` red pattern as the Force restart button; `:disabled` reduces opacity to 0.5.
+
+### AC → verification mapping (T15)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `qa-smoke.sh` — `GET /api/stuck` returns 200; response body contains `"stuck"` key | e2e_check |
+| AC2 | `qa-smoke.sh` — `index.html` contains `stuck-cards`; `id="stuck-alert-slot"` appears before `id="section-attention"` in DOM line order | e2e_check |
+| AC3 | PR review — inject 3 stuck agents via `window.__injectStuck`; confirm single card with "+2 more" badge | human-verify |
+| AC4 | PR review — click Force restart; confirm modal heading `"Restart agent-be?"`, body references task ID, Cancel + red "Restart agent-be" buttons | human-verify |
+| AC5 | PR review — click Restart in modal; confirm POST fires to `/api/fleet/restart?agent=agent-be`; button shows "Restarting…" and is disabled | human-verify |
+| AC6 | PR review — inject stuck then `window.__injectFleetUpdate` with new `task`; confirm card fades out | human-verify |
+| AC7 | PR review — press Escape; confirm modal closes (native `<dialog>` behavior); backdrop click closes modal; Cancel closes modal | human-verify |
+| AC8 | PR review — inspect DOM; confirm `<dialog>` element present (`tagName=DIALOG`), placed before `<script src="console.js">` so `initRestartModal()` finds it on parse | human-verify |
+
+### GET /api/stuck — server.ts fix (cb261a1)
+
+This branch also includes a one-line fix to the `GET /api/stuck` handler in `server.ts`: the `agents` argument passed to `computeStuckSignals()` was changed from `agentList` (a `string[]` from `supervisor/fleet.conf`, set up for log-watcher purposes) to `[...validAgents]` (spread from the `Set<string>` that governs request validation, sourced from `controlDir/fleet.conf` per T11-amended). Without this fix, stuck detection would check agents from the wrong fleet registry whenever a workspace switch occurred.
 
 ---
 
@@ -914,6 +1326,8 @@ All fonts use `display=swap` to prevent invisible text during font load.
 ### Design tokens
 Sourced from `docs/DESIGN.md` and defined in `:root` of `styles.css`:
 
+**Palette tokens:**
+
 | Token | Value | Purpose |
 |-------|-------|---------|
 | `--base` | `#0C0C0C` | Page background |
@@ -927,6 +1341,45 @@ Sourced from `docs/DESIGN.md` and defined in `:root` of `styles.css`:
 | `--green` | `#22C55E` | Success state |
 | `--red` | `#EF4444` | Error state |
 | `--blue` | `#3B82F6` | Info state |
+
+**Typography tokens (T10):**
+
+| Token | Value | Purpose |
+|-------|-------|---------|
+| `--font-body` | `'Satoshi', 'DM Sans', system-ui, sans-serif` | Body font stack — applied to `body { font-family }` |
+| `--font-mono` | `'JetBrains Mono', ui-monospace, monospace` | Monospace font stack — applied to `code` and `.cmd` elements |
+
+**Spacing scale tokens (T10):**
+
+| Token | Value |
+|-------|-------|
+| `--space-1` | `4px` |
+| `--space-2` | `8px` |
+| `--space-3` | `12px` |
+| `--space-4` | `16px` |
+| `--space-6` | `24px` |
+| `--space-8` | `32px` |
+
+All `margin`, `padding`, and `gap` values in component rules use these tokens. No raw `px` values remain in component rules.
+
+**Border-radius tokens (T10):**
+
+| Token | Value | Applied to |
+|-------|-------|------------|
+| `--radius-card` | `6px` | `.card`, `.attention-card`, `.card-textarea`, fleet table rows (responsive) |
+| `--radius-badge` | `4px` | `.section-badge`, `.failure-badge`, `.ai-draft-toggle`, `.card-agent-note` corners |
+| `--radius-btn` | `6px` | Action buttons |
+
+**Status dot color tokens (T10):**
+
+These are separate from the palette `--green`/`--amber`/`--red` tokens and are used exclusively for the SSE connection status dot and state indicators:
+
+| Token | Value | Purpose |
+|-------|-------|---------|
+| `--color-green` | `#16a34a` | Connected dot / working state |
+| `--color-amber` | `#d97706` | Reconnecting dot |
+| `--color-red` | `#dc2626` | Disconnected dot / error state |
+| `--color-grey` | `#9ca3af` | Inactive / stopped state |
 
 ### Motion variables
 Used for consistent timing across transitions and animations:
@@ -942,15 +1395,76 @@ Used for consistent timing across transitions and animations:
 ### Visual effects
 - **Grain texture:** `body::after` pseudo-element with SVG `feTurbulence` at 0.03 opacity (fixed position, z-index 9999, non-interactive). Adds subtle surface texture without impacting readability.
 
-### Font sizing
-- Body text: 16px (see `docs/DESIGN.md` for rationale)
-- Button border-radius: 8px (consistent with accessibility guidelines)
+### Font sizing and line height
+- Body text: `16px`, `line-height: 1.5` — set via `var(--font-body)` on `body`
+- Monospace elements (`code`, `.cmd`): `font-family: var(--font-mono)`, `line-height: 1.6`
+- Card border-radius: `6px` (`--radius-card`)
+- Badge border-radius: `4px` (`--radius-badge`)
+- Button border-radius: `6px` (`--radius-btn`)
 
 ---
 
 ## Console UI — Interactive features and polish (v7.1)
 
 The `console.js` file implements a vanilla JavaScript frontend for the console UI, providing real-time task and approval queue management with animations, accessibility, and dynamic content updates via SSE.
+
+### Fleet row avatars (AC1)
+
+Each fleet table row renders a 32×32 Dicebear "initials" avatar next to the agent name. The avatar URL is constructed client-side:
+
+```
+https://api.dicebear.com/7.x/initials/svg?seed={encodeURIComponent(a.name)}&size=32
+```
+
+The `<img class="fleet-avatar">` element is placed next to the agent name text. If the Dicebear CDN is unreachable, the image's `onerror` handler reveals a `.fleet-avatar-fallback` grey circle `<div>` in its place. Below 640px, both the avatar and fallback are hidden via `display: none` to keep the stacked-card layout readable.
+
+### SSE connection status dot (AC3)
+
+The header includes a six-pixel coloured dot (`#sse-dot`) indicating SSE connection health. A `setInterval` polling every 2 seconds checks `es.readyState` and applies CSS classes accordingly:
+
+| readyState | Class | Visual |
+|---|---|---|
+| `EventSource.OPEN` | (no class) | Green (pulsing) |
+| `EventSource.CONNECTING` | `.connecting` | Amber |
+| `EventSource.CLOSED` | `.disconnected` | Red (no pulse) |
+
+Color values use the T10 status dot tokens (`--color-green`, `--color-amber`, `--color-red`) — these are distinct from the palette tokens (`--green`, `--amber`, `--red`) and carry the DESIGN.md-specified status dot hex values. The dot also transitions to `.disconnected` immediately on an `error` event, before the auto-reconnect delay fires.
+
+### Unblock inline flow (AC5/AC6)
+
+Attention cards start with a single **Unblock** button. Clicking it:
+
+1. Hides the Unblock button (`hidden` attribute set).
+2. Reveals the textarea wrapper (removes `hidden` attribute from `#textarea-wrapper-{id}`).
+3. Reveals the **Send reply** button.
+4. If an AI draft is available, reveals the AI draft toggle.
+5. Focuses the textarea.
+
+Clicking **Send reply** (AC6):
+
+1. Reads the textarea value; if empty, focuses the textarea and returns without submitting.
+2. Sets button text to "Sending…" and disables it.
+3. POSTs to `POST /api/decision`:
+   ```json
+   { "action": "unblock", "text": "<operator note>", "agentName": "<ev.agent>", "taskId": "<ev.task_id>" }
+   ```
+4. After the request settles (success or error), calls `exitCard()` to fade and remove the card.
+
+### Responsive layout (AC8)
+
+Two CSS media query breakpoints ensure the console is usable on mobile:
+
+**640px breakpoint** — fleet table switches from a standard table to a stacked-card layout:
+- `<thead>` is hidden; `<tr>` renders as a `display: block` bordered card.
+- Each `<td>` uses `td::before { content: attr(data-label) }` to prefix the column name (e.g. "AGENT", "STATE").
+- Avatar and avatar-fallback are hidden to save space.
+- Row hover background is suppressed (touch devices do not hover).
+
+**375px breakpoint** — padding tightens to keep content readable at iPhone SE width:
+- `page-body` padding reduced to `12px 8px 48px`.
+- `page-header` padding and gap reduced.
+- Approval command font size drops to 11px.
+- Card action buttons are allowed to wrap.
 
 ### Two-section layout with per-section empty states
 
@@ -973,8 +1487,8 @@ Cards enter and exit the DOM with CSS animations driven by JavaScript:
 **Entry animation (AC3):** When a new card arrives via SSE, JavaScript prepends it with the `card-new` class. CSS plays a `slideIn 250ms var(--ease-enter)` animation, using the cubic-bezier bounce easing from the design tokens for a snappy entrance.
 
 **Exit animation (AC4):** When an operator approves or rejects a card, JavaScript:
-1. Adds the `card-exit` class to trigger a `fadeOut 150ms forwards` animation
-2. Waits 150ms for the fade to complete
+1. Adds the `card-exit` class to trigger a `fadeOut 300ms forwards` animation
+2. Waits 300ms for the fade to complete
 3. Removes the card from the DOM
 4. Updates queue counts and syncs the UI state
 
@@ -998,7 +1512,7 @@ Tasks that have an AI-drafted suggestion show a collapsible "AI Draft" button. C
 
 1. **Collapsible container:** Toggling the button shows/hides the panel using `aria-expanded` and display state.
 2. **Amber disclaimer badge:** Always visible when the panel is expanded, stating "AI draft — review before sending" in the `--amber` color.
-3. **Streaming text div:** The drafted text is rendered in a scrollable section (populated by the `POST /api/draft-decision` SSE response).
+3. **Draft text div:** The drafted text is rendered in a scrollable section. The operator types or pastes a note here, which is sent via `POST /api/draft-decision` to append it to the agent's mailbox.
 4. **"Use this draft ↑" button:** A ghost-style button copies the draft text into the textarea below, allowing operators to review and edit before sending.
 
 Example interaction:
@@ -1056,7 +1570,7 @@ No custom key handlers are needed — the browser's native button behavior is le
 
 - **No dependencies:** `console.js` uses vanilla JavaScript with no npm packages (htmx is not required for core functionality).
 - **Event source:** SSE endpoint is `/api/events` (shared with agent log broadcasting).
-- **Event types:** `approval`, `attention`, `resolve` (from the server).
+- **Event types:** `approval`, `attention`, `resolve` (queue/attention events from the server); `pipeline-update` (ledger change events, triggers a `fetchPipeline()` call when the Pipeline tab is active); `stuck` (edge-triggered alert when an agent is stuck, triggers `renderStuckSection()` to show or update the stuck alert card above the Queue attention section).
 - **HTML escaping:** All dynamic content is escaped via an `esc()` helper function to prevent XSS.
 - **State sync:** A `syncState()` function centralizes the logic for updating empty states, counts, badges, and the document title after every card operation.
 - **Timer display:** Elapsed time on each card updates every 1 second (minutes:seconds format).
@@ -1106,7 +1620,7 @@ Both conditions are asserted. This verifies commands are never silently executed
 **Task ID validation (AC3):** The `POST /api/unblock/<taskId>` endpoint rejects invalid task IDs:
 
 - Invalid: lowercase IDs (`cons-003`), missing digits (`CONS`), trailing slashes with extra segments
-- Valid: uppercase + dash + digits only (regex: `/^[A-Z]+-[0-9]+$/`)
+- Valid: uppercase letters followed by either hyphen+digits (`CONS-003`) or digits only (`T13`) — regex: `/^[A-Z]+(-[0-9]+|[0-9]+)$/` (T13 extended this from the original `/^[A-Z]+-[0-9]+$/` to support short-name style task IDs)
 - Response: HTTP 400 if invalid, 200 if valid
 
 **Agent name validation (AC4):** The `POST /api/mailbox/<agentName>` endpoint rejects unknown agents:
@@ -1152,9 +1666,282 @@ Each test creates temporary git repos with `git init` + `git remote add origin <
 
 AC4 (startup cache) is human-verify: `resolveControlDir` is called once in `server.ts` at module level and the result stored in `const controlDir` — never re-called on subsequent requests.
 
+**T4 SSE tests (T4 AC1–AC3, AC5):** Two `describe` blocks in `server.test.ts` cover the SSE endpoint and watch handler:
+
+| Describe block | What it tests |
+|---|---|
+| `makeWatchHandler — AC2` | Writes a JSON line to a temp `live-events.jsonl`; asserts the broadcast frame contains `event: fleet-update` and payload fields `{ type, agent, task, tool, summary, ts }`; verifies `lastEventCache` is populated |
+| `makeWatchHandler — AC3` | Points handler at a directory with no `live-events.jsonl`; asserts no frame is broadcast and no exception is thrown |
+| `makeWatchHandler — live.json` | Triggers handler with `live.json`; asserts a named `event: fleet-update` frame is broadcast |
+| `makeWatchHandler — unrelated` | Triggers handler with an unrelated filename; asserts no broadcast |
+| `GET /api/events — AC1` | Fetches `/api/events` from a local SSE test server; asserts HTTP 200, SSE headers, and `": ok\n\n"` as the first response chunk |
+| `GET /api/events — AC5` | Connects, reads the heartbeat, aborts the connection; asserts the client is removed from `sseClients` within 100ms |
+
+AC4 (Last-Event-ID replay) and AC6 (30s ping interval) are human-verify: AC4 requires a reconnect with a `Last-Event-ID` header to observe replay messages; AC6 requires waiting 30 seconds and confirming `: ping\n\n` is emitted.
+
+### Startup cleanup tests — `server-utils.ts` (T8 AC1–AC4)
+
+`purgeStaleDecisionFiles` is called directly in unit tests using a temporary `cleanup-decisions/` directory. Each test writes files with controlled `mtime` values (via `utimesSync`) then calls the function and asserts the result:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `deletes request *.json file older than 1 hour (AC1)` | AC1 | File with mtime 2 hours ago is deleted |
+| `also deletes paired *.decision.json when request file is deleted (AC2)` | AC2 | Request + decision pair both deleted when request mtime > 1 hour |
+| `deletes old *.decision.json even when request file is not old (AC2)` | AC2 | Old decision file deleted independently by the second pass |
+| `does NOT delete request file newer than 1 hour (AC3)` | AC3 | Recently written request file survives the sweep |
+| `exits silently when decisionsDir does not exist (AC4)` | AC4 | Non-existent path → no exception thrown |
+| `exits silently when decisionsDir is empty string (AC4)` | AC4 | Empty string → no exception thrown |
+
+AC5 (cleanup runs before `server.listen()`) is human-verify: confirmed by `server.ts` calling `purgeStaleDecisionFiles(...)` at line 402, before `server.listen(PORT, HOSTNAME, ...)` at line 413.
+
+### Pipeline view tests — `server.test.ts` (T13 AC1/AC2/AC3/AC7 + T13-amended AC2/AC4)
+
+Three `describe` blocks cover the T13 pipeline endpoints and the ledger watch handler, plus two additional blocks added by T13-amended that verify the SSE-only bootstrap behavior via static analysis of `console.js`:
+
+**`describe("GET /api/pipeline")`** — Three mock `.task` files with distinct statuses and controlled `mtime` values are written before the suite. Tests assert:
+- Response is HTTP 200 JSON with a `tasks` array and an `updatedAt` field (AC1)
+- Each task carries `updated_at` derived from file `mtime` (AC1)
+- Tasks within status groups are sorted by `updated_at` descending — most-recently-changed first (AC2)
+
+**`describe("makeLedgerWatchHandler")`** — Tests the exported handler function directly without a live server:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `broadcasts single pipeline-update SSE frame for a .task file change` | AC3 | Writes a `.task` file, calls the handler, asserts exactly one SSE frame with `event: pipeline-update`, `task_id`, `status`, and `agent: null` when `claimed_by` is `"-"` |
+| `includes claimed_by as agent when not "-"` | AC3 | File with `claimed_by: agent-fe` → `agent` field in payload is `"agent-fe"` |
+
+Non-`.task` filenames and IDs failing `TASK_ID_RE` are silently ignored (no frame broadcast).
+
+**`describe("GET /api/spec/:taskId")`** — Five tests covering AC7:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `returns 200 with markdown content for a valid existing taskId` | AC7 | HTTP 200, `content-type: application/json`, body `{ markdown: string }` containing the task ID |
+| `returns 400 for invalid taskId (lowercase)` | AC7 | `cons-999` → HTTP 400, error field truthy |
+| `returns 400 for invalid taskId (no digits)` | AC7 | `CONS` → HTTP 400 |
+| `returns 404 for valid taskId with no spec file` | AC7 | `T13` → HTTP 404, error field truthy |
+| `returns 503 when no tasksDir configured` | AC7 | Separate server without `tasksDir` → HTTP 503 |
+
+AC6 (spec panel click opens panel with content) and AC8 (domain filter persists in localStorage) are human-verify.
+
+**`describe("T13-amended AC2: console.js pipeline bootstrap guard")`** — Three static-analysis tests against the `console.js` source text (no live server needed):
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `pipelineBootstrapped guard variable is present in console.js` | AC2 | Source contains the identifier `pipelineBootstrapped` |
+| `fetchPipeline in switchTab is conditional on pipelineBootstrapped` | AC2 | First 1000 chars of `switchTab` body contain both `pipelineBootstrapped` and `fetchPipeline()` |
+| `no setInterval or setTimeout polls /api/pipeline` | AC1 | Regexes `/setInterval\b[^;]*pipeline/i` and `/setTimeout\b[^;]*fetchPipeline/i` both return false |
+
+**`describe("T13-amended AC4: SSE open handler calls fetchPipeline on reconnect")`** — One static-analysis test:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `fetchPipeline is called inside the SSE open event handler` | AC4 | Slices the `addEventListener('open'` handler body from source and asserts it contains `fetchPipeline()` |
+
+### Fleet control tests — `server.test.ts` (T11 AC1–AC8)
+
+T11 adds 25 new tests across 8 describe blocks. A shared `fleetServer` (port 7849) is created with injectable `killFn`, `isAliveFn`, `spawnFn`, and `broadcastFn` so all fleet control logic can be exercised without sending real OS signals or spawning real processes. One pid file is pre-written: `agent-be.pid` = `12345`. `agent-qa` has no pid file (used for 404 tests).
+
+**`describe("stopProcess (AC1)")`** — 3 tests against the exported utility directly:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `sends SIGTERM first, then SIGKILL after timeout when process stays alive` | AC1 | `isAliveFn` always returns true; asserts `SIGTERM` before `SIGKILL` in signal order |
+| `sends SIGTERM and resolves without SIGKILL when process dies after SIGTERM` | AC1 | `isAliveFn` flips false on SIGTERM; asserts SIGTERM present, SIGKILL absent |
+| `returns immediately without sending any signal when process is already dead (AC6/AC8)` | AC6/AC8 | `isAliveFn` always false; asserts zero signals sent |
+
+**`describe("fleet control unknown agent → 400 (AC5)")`** — 5 tests:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `POST /api/fleet/stop returns 400 for unknown agent` | AC5 | `agent=unknown-agent` → HTTP 400 with error body |
+| `POST /api/fleet/restart returns 400 for unknown agent` | AC5 | Same for restart |
+| `POST /api/fleet/pause returns 400 for unknown agent` | AC5 | Same for pause |
+| `POST /api/fleet/resume returns 400 for unknown agent` | AC5 | Same for resume |
+| `POST /api/fleet/stop returns 400 when agent query param is missing` | AC5 | Missing `?agent=` → HTTP 400 |
+
+**`describe("POST /api/fleet/stop (AC1/AC6/AC8)")`** — 4 tests via HTTP:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `returns 200 { ok: true } when process is dead (stale PID / AC6 / AC8)` | AC6/AC8 | `isAliveFn = () => false`; 200, no signals sent |
+| `returns 200 { ok: true } and sends SIGTERM when process is alive` | AC1 | `isAliveFn` flips false on kill; 200, SIGTERM sent to PID 12345 |
+| `returns 404 when pid file does not exist` | AC1 | `agent=agent-qa` (no pid file) → HTTP 404 |
+| `is idempotent — second call when process is dead also returns 200 (AC8)` | AC8 | Two consecutive stop calls both return 200 |
+
+**`describe("POST /api/fleet/restart (AC2)")`** — 2 tests:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `stops the agent then spawns run-agent.sh with the agent name` | AC2 | SIGTERM sent, then `spawnFn` called once with `agentName = "agent-be"` and script path containing `run-agent.sh` |
+| `spawns run-agent.sh even when process was already dead` | AC2 | `isAliveFn = () => false`; stop is a no-op but spawn still fires |
+
+**`describe("POST /api/fleet/pause (AC3/AC6)")`** — 2 tests:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `sends SIGSTOP to the agent's PID when process is alive (AC3)` | AC3 | `isAliveFn = () => true`; exactly one kill call with `{ pid: 12345, signal: "SIGSTOP" }` |
+| `returns 409 { error: 'process not running' } when process is not alive (AC6)` | AC6 | `isAliveFn = () => false` → HTTP 409, error body |
+
+**`describe("POST /api/fleet/resume (AC4/AC6)")`** — 2 tests:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `sends SIGCONT to the agent's PID when process is alive (AC4)` | AC4 | `isAliveFn = () => true`; exactly one kill call with `{ pid: 12345, signal: "SIGCONT" }` |
+| `returns 409 { error: 'process not running' } when process is not alive (AC6)` | AC6 | `isAliveFn = () => false` → HTTP 409, error body |
+
+**`describe("fleet-update SSE broadcast (AC7)")`** — 3 tests:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `broadcasts fleet-update event after stop` | AC7 | After stop call, `broadcastFn` called once; frame contains `event: fleet-update`; payload `{ type: "fleet-update", agent: "agent-be", action: "stop", ts: number }` |
+| `broadcasts fleet-update event after restart` | AC7 | After restart call, broadcast fires with `action: "restart"` |
+| `does NOT broadcast fleet-update after pause (AC7 scope: stop/restart only)` | AC7 | After pause call, `broadcastFn` call count is zero |
+
+**`describe("readPidFile")`** — 4 unit tests:
+
+| Test | What it asserts |
+|---|---|
+| `returns the numeric PID when the file contains a valid integer` | File containing `"42\n"` → returns `42` |
+| `returns null when the file does not exist` | Non-existent path → `null` |
+| `returns null for non-numeric content` | File containing `"not-a-pid\n"` → `null` |
+| `returns null for zero or negative PID` | File containing `"0\n"` → `null` |
+
+### T11-amended tests — validAgents from fleet.conf (AC2/AC3/AC4)
+
+T11-amended adds 7 new tests across 3 describe blocks. Each block uses a `makeFleetConfHandler` factory that mirrors the `server.ts` T11-amended implementation: `validAgents` is sourced from `controlDir/fleet.conf` and can be rebuilt via `POST /api/workspace-switch`. Three isolated HTTP servers are used (ports 7850–7852) so no state bleeds between blocks.
+
+**`describe("missing fleet.conf — validAgents empty (AC2)")`** — port 7850, 2 tests:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `known agent returns 400 when fleet.conf is absent (no fallback list)` | AC2 | No fleet.conf in control dir; POST to `/api/mailbox/agent-be` → 400 |
+| `all four standard agents return 400 when fleet.conf is absent` | AC2 | Each of agent-be/qa/fe/doc → 400; confirms no hardcoded fallback exists |
+
+**`describe("workspace switch validAgents (AC3)")`** — port 7851, 3 tests:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `workspace A agents are valid before switch` | AC3 | Workspace A fleet.conf lists agent-be/agent-qa; agent-be → 200, agent-fe → 400 |
+| `after workspace switch validAgents reflects new workspace fleet.conf` | AC3 | POST `/api/workspace-switch` with workspace B dir (agent-fe/agent-doc); agent-fe → 200, agent-be → 400; response body includes new agent list |
+| `switch to workspace with absent fleet.conf empties validAgents` | AC3 | Switch to dir with no fleet.conf; response `agents` array is empty; agent-fe → 400 |
+
+**`describe("GET /api/fleet reflects validAgents from fleet.conf (AC4)")`** — port 7852, 2 tests:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `GET /api/fleet returns only agents present in validAgents set` | AC4 | Fleet.conf lists agent-be + agent-qa only; response length 2; agent-fe and agent-doc absent |
+| `GET /api/fleet returns empty array when validAgents is empty` | AC4 | Switch to workspace with no fleet.conf; GET `/api/fleet` → `[]` |
+
+### Stuck detection tests — `server.test.ts` (T14 AC1–AC8)
+
+T14 adds 8 new tests in one `describe` block. Two isolated HTTP servers are created: a shared `stuckServer` (port 7851) hosting six synthetic agents that cover all signal types, and a dedicated `stuckEdgeServer` (port 7852) with fresh module-level state to verify edge-triggered SSE without interference from other tests. A `makeStuckHandler` factory mirrors the `server.ts` implementation with injectable `broadcastCooldownMs` so the 60-second cooldown can be bypassed in tests.
+
+**Test fixtures** written in `beforeAll`:
+
+| Agent | What is set up |
+|---|---|
+| `stuck-silent` | JSONL with one event 11 minutes ago |
+| `stuck-loop` | JSONL with 5 consecutive `tool: "Edit"` events (recent ts) |
+| `stuck-fail` | Ledger entry: `failure_count=2`, `status=in_progress`; recent JSONL |
+| `stuck-malformed` | JSONL: `}{broken json line` then one valid event 15 minutes ago |
+| `stuck-missing` | Log directory exists but no `live-events.jsonl` file |
+| `stuck-suppressed` | Ledger: `status=needs_human`, `failure_count=3`; recent JSONL |
+
+**`describe("GET /api/stuck")`** — 8 tests:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `AC1: returns { stuck: StuckAgent[] } with correct shape` | AC1 | HTTP 200; `body.stuck` is an array; `stuck-silent` entry has `agent`, `signal`, `detail`, `since` as strings; `since` is a valid date |
+| `AC2: silent detection — ts 11 minutes ago, signal=silent, detail contains '11m'` | AC2 | `stuck-silent` entry: `signal="silent"`, `detail` contains `"11m"` |
+| `AC3: loop detection — 5 events with tool='Edit', signal=loop, detail='looping on Edit'` | AC3 | `stuck-loop` entry: `signal="loop"`, `detail="looping on Edit"` |
+| `AC4: fail_storm — failure_count=2 and status=in_progress, signal=fail_storm` | AC4 | `stuck-fail` entry: `signal="fail_storm"`, `detail="2 failed attempts"` |
+| `AC5: malformed JSONL line skipped — returns 200 with valid array, not 500` | AC5 | HTTP 200; `stuck-malformed` entry present (bad line skipped, valid old ts → silent) |
+| `AC6: missing log file — agent skipped gracefully, others still returned, no 500` | AC6 | HTTP 200; `stuck-missing` absent; `stuck-silent` still present |
+| `AC7: edge-triggered SSE — broadcasts once for new signal, suppresses same signal on re-evaluation` | AC7 | First call: exactly 1 broadcast for `stuck-edge`, `event: stuck`, payload has `agent="stuck-edge"` and `signal="silent"`; second call (same signal): 0 broadcasts |
+| `AC8: agent with needs_human status not reported as stuck` | AC8 | `stuck-suppressed` absent from stuck array despite `failure_count=3` |
+
+### Malformed JSONL resilience tests — `server.test.ts` (T14-amended AC2–AC4)
+
+T14-amended adds a `describe("stuck detection malformed JSONL")` block with 3 tests across two isolated HTTP servers:
+
+- **Port 7853** (`malformedMixedServer`): serves a 20-line `live-events.jsonl` with malformed lines at positions 4, 11, and 17 (0-indexed). The remaining 17 lines are valid `Bash` events with recent timestamps.
+- **Port 7854** (`malformedAllServer`): serves a 5-line `live-events.jsonl` where every line is `}{broken`.
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `AC2: 20-line file with 3 malformed lines — signals computed from 17 valid lines` | AC2 | `GET /api/stuck` returns HTTP 200; `malformed-mixed` agent entry present with `signal="loop"` (17 valid Bash events → last 5 identical tools → loop detected) |
+| `AC3: malformed JSONL lines do not cause a 500 — endpoint always returns 200` | AC3 | `GET /api/stuck` against the mixed-malformed server returns HTTP 200, not 500 |
+| `AC4: all-malformed JSONL file → { stuck: [] } with HTTP 200` | AC4 | `GET /api/stuck` against the all-malformed server returns HTTP 200; `body.stuck` has length 0 (no valid events to compute signals from) |
+
+### T16-amended gap tests — server.test.ts (AC1–AC4)
+
+T16-amended adds 4 describe blocks that close boundary and multi-signal gaps not covered by prior test suites. Each block is self-contained; AC1 and AC4 spin up dedicated HTTP servers (ports 7871 and 7872 respectively) with their own `beforeAll`/`afterAll` lifecycle, while AC2 and AC3 are pure unit tests that call `computeStuckSignals` directly.
+
+**`describe("fleet/stop stale PID")`** (1 test, port 7871, real `defaultIsProcessAlive`/`defaultKillFn`):
+
+Writes PID `99999` to a temp pid file and wires `makeFleetControlHandler` with `defaultIsProcessAlive` and `defaultKillFn` — the real `process.kill(pid, 0)` liveness check and real signal sender. PID 99999 cannot be running on macOS (kernel max PID is 99998).
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `PID file exists but process is not running → stop returns 200 { ok: true }` | AC1 | POST `/api/fleet/stop?agent=agent-be` → HTTP 200, `{ ok: true }`. Confirms `stopProcess` returns immediately when `defaultIsProcessAlive` throws ESRCH, without sending any signal. |
+
+**`describe("stuck loop threshold 4")`** (1 test, pure unit):
+
+Writes 4 consecutive `Edit` events to a temp `live-events.jsonl` (one below the 5-event loop threshold) and calls `computeStuckSignals` directly.
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `exactly 4 consecutive same-tool events does NOT trigger loop signal (threshold is 5)` | AC2 | `computeStuckSignals(["agent-4loop"], tDir, emptyLedgerDir)` must return no entry with `signal === "loop"` for `agent-4loop`. |
+
+**`describe("stuck signal precedence")`** (1 test, pure unit):
+
+Sets up both a `fail_storm` condition (`failure_count: 2`, `status: in_progress` in a temp ledger task file) and a `loop` condition (5 consecutive `Edit` events in `live-events.jsonl`) simultaneously for the same agent, then calls `computeStuckSignals` directly.
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `fail_storm takes precedence over loop when both conditions are met simultaneously` | AC3 | `computeStuckSignals(["agent-prec"], tDir, tLedger)` returns one entry for `agent-prec` with `signal === "fail_storm"`. Confirms the T14 precedence rule (`fail_storm` checked first with `continue`) holds under a real multi-signal scenario. |
+
+**`describe("log n=0")`** (1 test, port 7872):
+
+Wires `makeLogHandler` on port 7872 with a 100-request rate limiter. The server lifecycle is independent from all other log-handler test servers.
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `?n=0 returns 400 { error: 'n must be 1-200' } (boundary below minimum)` | AC4 | GET `/api/log/agent-be?n=0` → HTTP 400, body `{ error: "n must be 1-200" }`. Confirms the `n < 1` branch of the validation check in `makeLogHandler`. |
+
+### Draft-decision tests — server.test.ts (T5 AC1–AC7)
+
+T5 adds a `describe("POST /api/draft-decision")` block with 7 tests across two isolated HTTP servers:
+
+- **Port 7855** (`draftServer`): uses `draftTestDir` as `controlDir`, `draftValidAgents` Set (`agent-be`, `agent-qa`, `agent-fe`, `agent-doc`), and `mockGit` (captures args, optionally throws). Mailbox files are created in `draftMailboxDir = join(draftTestDir, "mailboxes")`.
+- **Port 7856** (`draftNoCtrlServer`): uses empty string as `controlDir` to exercise the 503 path without touching the filesystem.
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `AC1: appends correct mailbox block to {controlDir}/mailboxes/{agentName}.md` | AC1 | POST returns 200; `agent-be.md` contains `## from: human \| {ISO ts} \| re: T5` followed by `looks good` |
+| `AC2: calls gitCommitAndPush with correct commit message on success` | AC2 | POST returns `{ ok: true }`; `capturedGitArgs.msg === "console: note for agent-qa re CONS-123"`; `capturedGitArgs.dir === draftTestDir` |
+| `AC3: unknown agentName → 400 { error: 'unknown agent' }` | AC3 | `agentName: "agent-unknown"` → HTTP 400, body `{ error: "unknown agent" }` |
+| `AC4: taskId failing TASK_ID_RE → 400 { error: 'invalid taskId' }` | AC4 | `taskId: "invalid"` → HTTP 400, body `{ error: "invalid taskId" }` |
+| `AC5: empty text → 400 { error: 'text required' }` | AC5 | `text: ""` → HTTP 400, body `{ error: "text required" }` |
+| `AC6: gitCommitAndPush throws → 500 { error: 'git push failed' }` | AC6 | `gitShouldFail = true` → HTTP 500, body `{ error: "git push failed" }` |
+| `AC7: CONTROL_DIR not set → 503 { error: 'control dir not configured' }` | AC7 | Request to port 7856 (empty `controlDir`) → HTTP 503, body `{ error: "control dir not configured" }` |
+
+The test infrastructure uses a `makeDraftDecisionHandler` factory (mirrors `handleDraftDecision` in `server.ts`) with injectable `controlDir`, `validAgents`, and `gitFn` to avoid side-effects on the real control repo. `capturedGitArgs` and `gitShouldFail` are module-level mutable state reset per test. Temp directory and both servers are torn down in `afterAll`.
+
+### BUG-2 regression guard — server.test.ts
+
+BUG-2 adds one static-analysis test that prevents the `agentList` ReferenceError from being silently reintroduced by a future merge conflict. The bug arose because T14 introduced `computeStuckSignals(agentList, ...)` using the pre-T11-amended variable name, while T11-amended had already renamed `agentList` to `supervisorAgentList`. The server crash was already fixed in main; this test locks the fix.
+
+**`describe("BUG-2: GET /api/stuck agentList regression guard")`** — 1 test:
+
+| Test | What it asserts |
+|---|---|
+| `server.ts passes validAgents (not agentList) to computeStuckSignals` | Reads `server.ts` source with `readFileSync` and asserts `/computeStuckSignals\s*\(\s*agentList\b/` does not match. Any merge conflict that reintroduces the wrong variable name fails this test immediately, before the server even boots. |
+
 ### Test results
 
-All 41 tests pass (8 bash-wrapper + 33 server tests). Run the full suite with:
+All 135 tests pass (2 bash-wrapper + 133 server tests). Run the full suite with:
 
 ```bash
 bun test supervisor/console/     # runs all tests, exit 0 on pass
@@ -1180,8 +1967,21 @@ The script:
 2. Asserts the page title contains "Fleet Console"
 3. Asserts a `nav[role=tablist]` (the tab bar) is visible
 4. Asserts the "Fleet" tab button is present in the DOM
-5. Captures a timestamped screenshot to `/tmp/console-qa-<timestamp>.png`
-6. Prints the screenshot path to stdout so the QA agent can attach it to its report
+5. Asserts `GET /api/pipeline` returns HTTP 200 (T13 AC1 prerequisite)
+6. Asserts `GET /api/spec/invalid-id` returns HTTP 400 (T13 AC7)
+7. Asserts `index.html` contains the `pipeline-groups` container element (T13 AC4/AC5)
+8. Asserts the pipeline JSON response contains a `tasks` key (T13 AC4/AC5)
+9. Asserts `GET /api/stuck` returns HTTP 200 with a `"stuck"` key in the response body (T15 AC1)
+10. Asserts `index.html` contains a `stuck-cards` container element (T15 AC1/AC2)
+11. Asserts `id="stuck-alert-slot"` appears before `id="section-attention"` in the HTML source (T15 AC2 — slot is above the Queue attention section)
+12. Asserts `GET /api/pipeline` returns HTTP 200 with `content-type: application/json` (T16 AC6)
+13. Asserts `GET /api/stuck` returns HTTP 200 with `content-type: application/json` (T16 AC6)
+14. Asserts `GET /api/log/smoke-test-agent` returns HTTP 200 with `content-type: application/json` (T16 AC6)
+15. Asserts `POST /api/fleet/stop?agent=smoke-test-agent` (mock PID 99999 — non-running) returns `{ ok: true }` (T16 AC7)
+16. Captures a timestamped screenshot to `/tmp/console-qa-<timestamp>.png`
+17. Prints the screenshot path to stdout so the QA agent can attach it to its report
+
+Items 12–14 use a `check_json` helper that calls `curl -D -` to capture response headers inline and checks both HTTP status and `Content-Type: application/json`. Items 14–15 require `CONTROL_DIR` to be set so `validAgents` is populated — the script creates a temporary `CONTROL_DIR` with a single-line `fleet.conf` listing `smoke-test-agent`, and writes a mock PID file at `supervisor/pids/smoke-test-agent.pid` containing `99999`. Both are cleaned up by the `EXIT` trap.
 
 ### Error handling
 
@@ -1327,6 +2127,215 @@ Three new `describe` blocks in `server.test.ts` cover the server-side ACs:
 | `GET /api/queue missing dir` | AC6 | `readApprovals(nonexistent-path)` → `[]`, no exception thrown |
 
 Test fixtures in `beforeAll`: one unresolved approval file (`agent-fe-REQ-1.json`), one resolved pair (`agent-fe-REQ-2.json` + `agent-fe-REQ-2.decision.json`). The AC1 test asserts that only REQ-1 appears in the response.
+
+---
+
+## Pipeline view — GET /api/pipeline + GET /api/spec/:taskId (T13 / T13-amended)
+
+The Pipeline tab gives directors a single-screen answer to "how much work is left?" by reading every task in the ledger and grouping them by status. The view is SSE-only: on first tab activation `GET /api/pipeline` is called once to bootstrap the view, and every subsequent `.task` file change in the ledger triggers a `pipeline-update` SSE event that refreshes the tab automatically. There is no polling fallback — the SSE reconnect path handles connection drops by calling `GET /api/pipeline` again on reconnect.
+
+### GET /api/pipeline (AC1/AC2)
+
+**Endpoint:** `GET /api/pipeline`
+
+**Response:** HTTP 200 with `Content-Type: application/json`:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "T13",
+      "status": "documenting",
+      "domain": "doc",
+      "claimed_by": "agent-doc",
+      "failure_count": "0",
+      "description": "Pipeline view: GET /api/pipeline + task card layout",
+      "updated_at": "2026-06-22T11:00:00.000Z"
+    }
+  ],
+  "updatedAt": "2026-06-22T11:01:00.000Z"
+}
+```
+
+**`updated_at` field (AC1 extension):** `parseTaskLedger` was extended to return `PipelineTask[]` (a superset of the existing `TaskEntry` type). Each `PipelineTask` carries an `updated_at` ISO string derived from the task file's `mtime`. If the stat call fails, `updated_at` defaults to the Unix epoch.
+
+**Sort order (AC2):** The server sorts tasks within each status group by `updated_at` descending — the most recently changed task appears first. Groups themselves are not sorted by the endpoint; that ordering is applied by the client in `PIPELINE_STATUS_GROUPS`.
+
+### GET /api/spec/:taskId (AC7)
+
+**Endpoint:** `GET /api/spec/:taskId`
+
+Returns the raw markdown content of a task's spec file from `$CONTROL_DIR/tasks/{taskId}.md`.
+
+| Status | Condition |
+|---|---|
+| 200 | Valid `taskId`, file exists — body: `{ "markdown": "..." }` |
+| 400 | `taskId` fails `TASK_ID_RE` — body: `{ "error": "invalid task ID" }` |
+| 404 | Valid `taskId` but no spec file at the resolved path — body: `{ "error": "spec not found" }` |
+| 503 | `CONTROL_DIR` not configured — body: `{ "error": "CONTROL_DIR not configured" }` |
+
+The `taskId` is validated against `TASK_ID_RE` before any filesystem access. Spec content is fetched at click time (not pre-loaded).
+
+### Pipeline-update SSE event (AC3)
+
+When any `.task` file in `$CONTROL_DIR/ledger/` changes, the server broadcasts a named SSE event to all connected clients:
+
+```
+event: pipeline-update
+data: {"type":"pipeline-update","task_id":"T13","status":"done","agent":null}
+```
+
+The `agent` field is the current `claimed_by` value (null if the task is unclaimed or the field is `"-"`). This event reuses the existing ledger `fs.watch` watcher registered at server startup via `makeLedgerWatchHandler` — no second `fs.watch` call is opened.
+
+The browser listens for `pipeline-update` events and calls `fetchPipeline()` only when the Pipeline tab is currently active. Inactive tabs do not fetch. There is no polling fallback for the pipeline view — connection drops are handled by the SSE reconnect path (see below).
+
+### Pipeline tab UI (AC4/AC5)
+
+Tasks are rendered in four collapsible groups, in this order:
+
+| Group | Statuses covered |
+|---|---|
+| In progress | `in_progress`, `testing`, `documenting` |
+| Blocked | `needs_human`, `awaiting_info` |
+| Open | `open` |
+| Done | `done` |
+
+Each group header shows the group name and a count badge. Groups with zero tasks are collapsed by default (header present, body `hidden`). Clicking a header toggles `aria-expanded` and removes/adds the `hidden` attribute on the body.
+
+Each task card (`<article role="button">`) shows:
+- **Task ID** — bold
+- **Domain pill** — `domain` field (falls back to `origin_domain` if absent)
+- **Agent name** — `claimed_by` field; greyed-out "—" when unclaimed
+- **Failure count badge** — amber badge showing `failure_count`, visible only when ≥ 1
+- **Time since `updated_at`** — relative time string (e.g., "5m ago", "2h ago")
+
+### Domain filter chips (AC8)
+
+Five chips above the pipeline groups let operators filter by domain: **All**, **be**, **fe**, **doc**, **qa**. The active chip uses a filled style (`.domain-chip-active` CSS class). The selected filter is persisted to `localStorage` under the key `console-pipeline-domain-filter` so it survives page reloads. On filter change, `renderPipeline()` is called immediately with the stored filter.
+
+### SSE-only bootstrap and reconnect guard (T13-amended AC2/AC3/AC4)
+
+T13-amended removes the original polling fallback from the pipeline view and introduces a one-shot bootstrap guard:
+
+**`pipelineBootstrapped` flag (AC2):** A module-level boolean in `console.js`. When the Pipeline tab is activated for the first time in a session, `switchTab('pipeline')` checks the flag: if `false`, it calls `fetchPipeline()` and sets the flag to `true`. Subsequent tab switches do not re-fetch. This prevents redundant initial loads while still ensuring the first activation always gets fresh data.
+
+**SSE reconnect behavior (AC4):** The `EventSource` `open` event handler (which fires on initial connect and on every reconnect after a drop) calls `fetchPipeline()` and sets `pipelineBootstrapped = true`. This ensures the pipeline data is refreshed exactly once per reconnect. The flag is reset implicitly by the reconnect re-setting it to `true` on open — the subsequent tab switch guard then correctly skips the second fetch.
+
+**No polling fallback (AC3):** When the SSE connection drops, the console shows the existing "Reconnecting…" banner (the shared SSE status dot in the header). The pipeline view does not start polling `GET /api/pipeline` on connection loss. The banner dismisses and data refreshes when SSE reconnects.
+
+**Bug fix — SSE listeners on `es` (not `currentEs`):** Prior to T13-amended, all six `EventSource.addEventListener` calls inside `connect()` were attached to `currentEs` (which was `null` at call time) instead of `es` (the newly created `EventSource`). T13-amended corrects all six listeners (`open`, `approval`, `attention`, `resolve`, `fleet-update`, `error`) and the paired `currentEs.close()` call to use `es`.
+
+### Spec panel (AC6)
+
+Clicking any task card (or pressing Enter/Space when the card is focused) opens a slide-in `<aside id="spec-panel">` at the right edge of the Pipeline panel. The panel:
+
+1. Shows the `taskId` as a header
+2. Fetches `GET /api/spec/{taskId}` from the server
+3. Displays the raw markdown response as `<pre>` content inside `#spec-content`
+
+Content is fetched at click time — not pre-loaded. "Loading…" is displayed while the request is in flight. A close button dismisses the panel.
+
+---
+
+## Log tail endpoint — GET /api/log/:agent (v7.1)
+
+When a director clicks on an agent in the Fleet tab, a log panel opens showing the agent's last 50 events from `live-events.jsonl`. The `GET /api/log/:agent` endpoint seeds this panel on open; subsequent events arrive via the existing SSE stream filtered by agent name.
+
+### Endpoint
+
+**`GET /api/log/:agent?n=<count>`**
+
+| Parameter | Type | Default | Constraint |
+|---|---|---|---|
+| `:agent` | path | — | Must be a name from `fleet.conf`; unknown agents → 404 |
+| `?n` | query | `50` | Integer 1–200; non-numeric or > 200 → 400 |
+
+**Response (200):**
+
+```json
+{
+  "events": [
+    { "ts": "2026-06-22T00:00:01Z", "tool": "Bash", "summary": "ran bun test", "path": null },
+    { "ts": "2026-06-22T00:00:05Z", "tool": "Read",  "summary": "read README.md", "path": "/Users/user/agents/agent-be/work/README.md" }
+  ]
+}
+```
+
+The response also includes an `X-Log-Lines` header reporting the total number of non-empty lines in the file before the tail (for pagination context).
+
+Each event object always has four fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `ts` | string | ISO timestamp from the JSONL line |
+| `tool` | string | Tool name (e.g. `Bash`, `Read`, `Edit`) |
+| `summary` | string | One-line description of the action |
+| `path` | string \| null | File path if present; `null` for events that have no path |
+
+### Error responses
+
+| Status | Condition |
+|---|---|
+| 400 | `?n` is non-numeric, < 1, or > 200 — body: `{ "error": "n must be 1-200" }` |
+| 404 | Agent name not found in `validAgents` (built from `fleet.conf`) |
+| 429 | Rate limit exceeded (10 req/s per client IP) — body: `{ "error": "rate limit exceeded" }` |
+
+When the log file is absent or empty, the endpoint returns `200 { "events": [] }` — not 404 or 500 (AC4). This handles the case where an agent has been registered in `fleet.conf` but has not yet written any events.
+
+### readLogTail() — server-utils.ts
+
+`readLogTail(logFile, n)` is the pure utility that reads the JSONL file:
+
+1. Calls `readFileSync(logFile, "utf8")` — any exception (file not found, permission denied) returns `{ events: [], totalLines: 0 }` without rethrowing (AC4).
+2. Splits on `\n` and filters blank lines to get `lines[]`; records `totalLines = lines.length`.
+3. Slices the last `n` lines with `lines.slice(-n)`.
+4. For each line, calls `JSON.parse()` in a try/catch — malformed lines are silently skipped (AC5).
+5. Normalizes each parsed object into a `LogEvent` (typed fields with fallbacks to `""` / `null`).
+6. Returns `{ events, totalLines }`.
+
+The file is read whole-file in memory. Log files are small (< 100KB in practice) — no streaming or external `tail` process is used (per the spec constraint).
+
+### makeRateLimiter() — server-utils.ts
+
+`makeRateLimiter(maxPerSecond)` returns a `{ check(ip) }` token-bucket guard:
+
+- Keeps a `Map<string, { count, resetAt }>` at module scope — one bucket per client IP.
+- On each `check(ip)` call: if the bucket is absent or expired, a fresh bucket (`count=1, resetAt=now+1000ms`) is created and `true` is returned.
+- If the bucket is current and `count >= maxPerSecond`, returns `false` (caller responds 429).
+- Otherwise increments `count` and returns `true`.
+- State resets on server restart (no external cache — per spec constraint).
+
+The server creates one `logRateLimiter = makeRateLimiter(10)` at module scope and shares it across all `/api/log/:agent` requests.
+
+### Implementation in server.ts
+
+The handler is registered after all other API routes and before the static file fallback:
+
+```
+GET /api/log/:agent
+  → validate agentName ∈ validAgents (404 if not)
+  → rate-limit check (429 if over)
+  → parse ?n (400 if invalid)
+  → readLogTail(~/agents/{agent}/logs/live-events.jsonl, n)
+  → respond 200 { events } + X-Log-Lines header
+```
+
+Log files are located at `homedir()/agents/{agentName}/logs/live-events.jsonl` — the same path the SSE watcher (`makeWatchHandler`) reads.
+
+### Test coverage (AC1–AC7)
+
+Two new `describe` blocks in `server.test.ts` cover all seven ACs:
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `returns last 50 of 100 events` | AC1 | 100-line fixture, `?n=50` → 50 events; last event `ts=99` |
+| `?n=300 returns 400` | AC2 | Body `{ error: "n must be 1-200" }` |
+| `?n=abc returns 400` | AC2 | Non-numeric → same 400 body |
+| `unknown agent returns 404` | AC3 | Agent not in Set → 404 |
+| `missing log file returns { events: [] }` | AC4 | `readLogTail` called with nonexistent path → `{ events: [], totalLines: 0 }` |
+| `malformed JSON lines silently skipped` | AC5 | File with 1 bad line, 2 valid → 2 events returned |
+| `X-Log-Lines header equals total line count` | AC6 | 100-line file, header `100` |
+| `11th request returns 429` | AC7 | Isolated server, 11 sequential requests → first 10 are 200, 11th is 429 |
 
 ---
 

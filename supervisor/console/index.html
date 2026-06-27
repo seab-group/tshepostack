@@ -29,6 +29,7 @@
   <nav role="tablist" class="tab-nav" aria-label="Console views">
     <button role="tab" id="tab-fleet" class="tab-btn" aria-selected="true" aria-controls="section-fleet">Fleet</button>
     <button role="tab" id="tab-queue" class="tab-btn" aria-selected="false" aria-controls="section-attention section-approval">Queue</button>
+    <button role="tab" id="tab-pipeline" class="tab-btn" aria-selected="false" aria-controls="section-pipeline">Pipeline</button>
     <button role="tab" id="tab-cost" class="tab-btn" aria-selected="false" aria-controls="section-cost">Cost</button>
   </nav>
 </header>
@@ -40,6 +41,11 @@
     <div class="reconnect-spinner" aria-hidden="true"></div>
     Connection lost — reconnecting…
   </div>
+
+  <!-- ── Stuck alert slot — shown above Queue attention section when agents are stuck (T15) ── -->
+  <section id="stuck-alert-slot" class="stuck-alert-section" aria-label="Stuck agents" aria-live="assertive" hidden>
+    <div id="stuck-cards"></div>
+  </section>
 
   <!-- ── Fleet tab panel (default) ── -->
   <div id="section-fleet" role="tabpanel" aria-labelledby="tab-fleet" class="tab-panel">
@@ -109,12 +115,45 @@
     <div class="empty-sub">No blocked tasks, no pending approvals.</div>
   </div>
 
+  <!-- ── Pipeline tab panel ── -->
+  <div id="section-pipeline" role="tabpanel" aria-labelledby="tab-pipeline" class="tab-panel" hidden>
+
+    <div class="pipeline-filter-bar" role="group" aria-label="Domain filter">
+      <button class="domain-chip" data-domain="all">All</button>
+      <button class="domain-chip" data-domain="be">be</button>
+      <button class="domain-chip" data-domain="fe">fe</button>
+      <button class="domain-chip" data-domain="doc">doc</button>
+      <button class="domain-chip" data-domain="qa">qa</button>
+    </div>
+
+    <div id="pipeline-groups"></div>
+
+    <aside id="spec-panel" class="spec-panel" hidden aria-label="Task spec">
+      <div class="spec-panel-header">
+        <span class="spec-panel-title" id="spec-panel-title">Spec</span>
+        <button id="spec-close" class="spec-close" aria-label="Close spec panel">×</button>
+      </div>
+      <pre id="spec-content" class="spec-content"></pre>
+    </aside>
+
+  </div>
+
   <!-- ── Cost tab panel (placeholder) ── -->
   <div id="section-cost" role="tabpanel" aria-labelledby="tab-cost" class="tab-panel" hidden>
     <div class="cost-placeholder">Cost view — coming soon</div>
   </div>
 
 </div><!-- /page-body -->
+
+<!-- ── Force restart confirm modal (AC8: native <dialog>) ── -->
+<dialog id="restart-modal" class="restart-modal" aria-labelledby="restart-modal-heading">
+  <h2 class="restart-modal-heading" id="restart-modal-heading">Restart agent?</h2>
+  <p class="restart-modal-body"></p>
+  <div class="restart-modal-actions">
+    <button class="btn-modal-cancel">Cancel</button>
+    <button class="btn-modal-restart btn-danger">Restart agent</button>
+  </div>
+</dialog>
 
 <script src="console.js"></script>
 </body>

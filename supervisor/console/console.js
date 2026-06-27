@@ -3,8 +3,11 @@
 const SSE_URL = '/api/events';
 const FLEET_URL = '/api/fleet';
 const QUEUE_URL = '/api/queue';
+const PIPELINE_URL = '/api/pipeline';
+const STUCK_URL = '/api/stuck';
 const RECONNECT_DELAY_MS = 3000;
 const FLEET_STALE_MS = 30000;
+const DOMAIN_FILTER_KEY = 'console-pipeline-domain-filter';
 
 const $ = (id) => document.getElementById(id);
 
@@ -19,10 +22,18 @@ const sseLabel = $('sse-label');
 const attentionBadge = $('attention-badge');
 const approvalBadge = $('approval-badge');
 
+let es = null;
 let sseConnected = false;
 let currentEs = null;
 let attentionCount = 0;
 let approvalCount = 0;
+let pipelineData = [];
+let pipelineDomainFilter = localStorage.getItem(DOMAIN_FILTER_KEY) || 'all';
+let pipelineBootstrapped = false;
+
+/* T15: stuck agent state */
+const stuckAgents = new Map(); // agent → { agent, signal, detail, since }
+const agentLastTaskId = new Map(); // agent → last known task_id (for AC6 auto-dismiss)
 
 /* ── Tab state ── */
 
@@ -34,12 +45,14 @@ const fleetElapsedTimers = new Map();
 const tabBtns = {
   fleet: $('tab-fleet'),
   queue: $('tab-queue'),
+  pipeline: $('tab-pipeline'),
   cost: $('tab-cost'),
 };
 
 const sectionFleet = $('section-fleet');
 const sectionAttention = $('section-attention');
 const sectionApproval = $('section-approval');
+const sectionPipeline = $('section-pipeline');
 const sectionCost = $('section-cost');
 
 function switchTab(name) {
@@ -65,6 +78,17 @@ function switchTab(name) {
     sectionApproval.setAttribute('hidden', '');
   }
 
+  /* Pipeline panel */
+  if (name === 'pipeline') {
+    sectionPipeline.removeAttribute('hidden');
+    if (!pipelineBootstrapped) {
+      pipelineBootstrapped = true;
+      fetchPipeline();
+    }
+  } else {
+    sectionPipeline.setAttribute('hidden', '');
+  }
+
   /* Cost panel */
   if (name === 'cost') {
     sectionCost.removeAttribute('hidden');
@@ -88,16 +112,16 @@ function switchTab(name) {
 
 /* ── Fleet data ── */
 
-async function fetchFleet() {
+async function fetchFleet(baseTs) {
   try {
     const res = await fetch(FLEET_URL);
     if (!res.ok) return;
     const agents = await res.json();
-    renderFleet(agents);
+    renderFleet(agents, baseTs);
   } catch (_) {}
 }
 
-function renderFleet(agents) {
+function renderFleet(agents, baseTs) {
   const loading = $('fleet-loading');
   const table = $('fleet-table');
   const empty = $('fleet-empty');
@@ -120,6 +144,7 @@ function renderFleet(agents) {
   tbody.innerHTML = '';
   for (const a of agents) {
     const tr = document.createElement('tr');
+    const avatarUrl = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(a.name)}&size=32`;
     const taskCell = a.task
       ? `<span class="fleet-task-id">${esc(a.task)}</span>`
       : `<span class="fleet-no-task">no tasks</span>`;
@@ -130,27 +155,35 @@ function renderFleet(agents) {
 
     tr.innerHTML = `
       <td class="fleet-agent" data-label="Agent">
-        <div class="fleet-agent-cell">
-          <div class="fleet-avatar">
-            <img src="${avatarSrc}" width="32" height="32" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
-            <div class="fleet-avatar-fallback" aria-hidden="true"></div>
-          </div>
-          <span>${esc(a.name)}</span>
-        </div>
+        <img class="fleet-avatar" src="${avatarUrl}" width="32" height="32" alt="" loading="lazy">
+        <div class="fleet-avatar-fallback" hidden aria-hidden="true"></div>
+        ${esc(a.name)}
       </td>
       <td data-label="State">${stateToHtml(a.state)}</td>
       <td data-label="Task">${taskCell}</td>
       <td class="fleet-elapsed" data-label="Elapsed">—</td>
-      <td class="fleet-tool" data-label="Tool">${toolCell}</td>
+      <td class="fleet-tool" data-label="Last tool">${toolCell}</td>
       <td class="fleet-summary" data-label="Activity">${summaryCell}</td>
     `;
 
     tbody.appendChild(tr);
 
+    /* AC1: fallback to grey circle if Dicebear fails to load */
+    const avatarImg = tr.querySelector('.fleet-avatar');
+    if (avatarImg) {
+      avatarImg.onerror = function() {
+        this.style.display = 'none';
+        const fallback = this.nextElementSibling;
+        if (fallback) fallback.removeAttribute('hidden');
+      };
+    }
+
     if (!a.ended && a.sessionStart) {
+      /* AC2: base timestamp from fleet-update ev.ts; update every 10 s */
+      const base = baseTs != null ? baseTs : Date.parse(a.sessionStart);
       const elapsedEl = tr.querySelector('.fleet-elapsed');
-      updateElapsed(elapsedEl, a.sessionStart);
-      const timer = setInterval(() => updateElapsed(elapsedEl, a.sessionStart), 10000);
+      updateElapsed(elapsedEl, base);
+      const timer = setInterval(() => updateElapsed(elapsedEl, base), 10000);
       fleetElapsedTimers.set(a.name, timer);
     }
   }
@@ -236,6 +269,289 @@ async function fetchQueue() {
   } catch (_) {}
 }
 
+/* ── Stuck alert (T15) ── */
+
+async function fetchStuck() {
+  try {
+    const res = await fetch(STUCK_URL);
+    if (!res.ok) return;
+    const data = await res.json();
+    for (const s of (data.stuck || [])) {
+      stuckAgents.set(s.agent, s);
+    }
+    renderStuckSection();
+  } catch (_) {}
+}
+
+function renderStuckSection() {
+  const section = $('stuck-alert-slot');
+  const container = $('stuck-cards');
+  if (!section || !container) return;
+
+  if (stuckAgents.size === 0) {
+    section.setAttribute('hidden', '');
+    container.innerHTML = '';
+    return;
+  }
+
+  /* AC3: show only the card for the agent with the earliest (oldest) since time */
+  let earliest = null;
+  for (const s of stuckAgents.values()) {
+    if (!earliest || new Date(s.since) < new Date(earliest.since)) earliest = s;
+  }
+
+  const extra = stuckAgents.size - 1;
+  container.innerHTML = '';
+  container.appendChild(buildStuckCard(earliest, extra));
+  section.removeAttribute('hidden');
+}
+
+function buildStuckCard(s, extraCount) {
+  const cardId = `stuck-${s.agent}`;
+  const article = document.createElement('article');
+  article.className = 'stuck-alert-card card-new';
+  article.id = cardId;
+  article.setAttribute('aria-label', `Stuck agent: ${s.agent}`);
+
+  const extraBadge = extraCount > 0
+    ? `<span class="stuck-more-badge" aria-label="${extraCount} more stuck agents">+${extraCount} more</span>`
+    : '';
+  const sinceStr = s.since ? relativeTime(s.since) : '—';
+
+  article.innerHTML = `
+    <div class="stuck-card-header">
+      <span class="stuck-signal-dot" aria-hidden="true"></span>
+      <span class="stuck-agent-name">${esc(s.agent)}</span>
+      ${extraBadge}
+      <span class="stuck-card-spacer"></span>
+      <span class="stuck-since">${esc(sinceStr)}</span>
+    </div>
+    <div class="stuck-detail">${esc(s.detail)}</div>
+    <div class="stuck-card-actions">
+      <button class="btn-force-restart" data-agent="${esc(s.agent)}">Force restart</button>
+    </div>
+  `;
+
+  article.querySelector('.btn-force-restart').addEventListener('click', () => {
+    showRestartModal(s.agent);
+  });
+
+  return article;
+}
+
+function dismissStuckAgent(agent) {
+  if (!stuckAgents.has(agent)) return;
+  stuckAgents.delete(agent);
+  const card = document.getElementById(`stuck-${agent}`);
+  if (card) {
+    exitCard(card, renderStuckSection);
+  } else {
+    renderStuckSection();
+  }
+}
+
+/* ── Force restart modal (AC4–AC8) ── */
+
+function showRestartModal(agent) {
+  const modal = $('restart-modal');
+  if (!modal) return;
+  const taskId = agentLastTaskId.get(agent) || 'current task unknown';
+  modal.querySelector('.restart-modal-heading').textContent = `Restart ${agent}?`;
+  modal.querySelector('.restart-modal-body').textContent =
+    `Current task ${taskId} will be marked failed. This cannot be undone.`;
+  const restartBtn = modal.querySelector('.btn-modal-restart');
+  restartBtn.textContent = `Restart ${agent}`;
+  restartBtn.dataset.agent = agent;
+  restartBtn.disabled = false;
+  modal.showModal();
+}
+
+function initRestartModal() {
+  const modal = $('restart-modal');
+  if (!modal) return;
+
+  /* AC7: close on backdrop click */
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.close(); });
+
+  modal.querySelector('.btn-modal-cancel').addEventListener('click', () => modal.close());
+
+  modal.querySelector('.btn-modal-restart').addEventListener('click', () => {
+    const btn = modal.querySelector('.btn-modal-restart');
+    const agent = btn.dataset.agent;
+    btn.textContent = 'Restarting…';
+    btn.disabled = true;
+    fetch(`/api/fleet/restart?agent=${encodeURIComponent(agent)}`, { method: 'POST' })
+      .catch(() => {})
+      .finally(() => modal.close());
+  });
+}
+
+/* ── Pipeline ── */
+
+const PIPELINE_STATUS_GROUPS = [
+  { label: 'In progress', statuses: ['in_progress', 'testing', 'documenting'] },
+  { label: 'Blocked',     statuses: ['needs_human', 'awaiting_info'] },
+  { label: 'Open',        statuses: ['open'] },
+  { label: 'Done',        statuses: ['done'] },
+];
+
+async function fetchPipeline() {
+  try {
+    const res = await fetch(PIPELINE_URL);
+    if (!res.ok) return;
+    const data = await res.json();
+    pipelineData = data.tasks || [];
+    renderPipeline();
+  } catch (_) {}
+}
+
+function renderPipeline() {
+  const groupsEl = $('pipeline-groups');
+  if (!groupsEl) return;
+
+  const filtered = pipelineDomainFilter === 'all'
+    ? pipelineData
+    : pipelineData.filter((t) => t.domain === pipelineDomainFilter || t.origin_domain === pipelineDomainFilter);
+
+  groupsEl.innerHTML = '';
+  for (const group of PIPELINE_STATUS_GROUPS) {
+    const tasks = filtered.filter((t) => group.statuses.includes(t.status));
+    const count = tasks.length;
+    const collapsed = count === 0;
+
+    const section = document.createElement('section');
+    section.className = 'pipeline-group';
+    section.dataset.group = group.label;
+
+    const header = document.createElement('div');
+    header.className = 'pipeline-group-header';
+    header.setAttribute('role', 'button');
+    header.setAttribute('tabindex', '0');
+    header.setAttribute('aria-expanded', String(!collapsed));
+    header.innerHTML = `
+      <span class="pipeline-group-name">${esc(group.label)}</span>
+      <span class="pipeline-group-count${count === 0 ? ' count-zero' : ''}">${count}</span>
+    `;
+
+    const body = document.createElement('div');
+    body.className = 'pipeline-group-body';
+    if (collapsed) body.setAttribute('hidden', '');
+
+    for (const task of tasks) {
+      body.appendChild(buildTaskCard(task));
+    }
+
+    header.addEventListener('click', () => {
+      const expanded = header.getAttribute('aria-expanded') === 'true';
+      header.setAttribute('aria-expanded', String(!expanded));
+      if (expanded) body.setAttribute('hidden', ''); else body.removeAttribute('hidden');
+    });
+    header.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); header.click(); }
+    });
+
+    section.appendChild(header);
+    section.appendChild(body);
+    groupsEl.appendChild(section);
+  }
+}
+
+function buildTaskCard(task) {
+  const failureCount = parseInt(task.failure_count || '0', 10);
+  const agentName = task.claimed_by && task.claimed_by !== '-' ? task.claimed_by : null;
+  const domain = task.domain || task.origin_domain || '?';
+  const timeSince = relativeTime(task.updated_at);
+
+  const article = document.createElement('article');
+  article.className = 'pipeline-task-card';
+  article.dataset.taskId = task.id;
+  article.setAttribute('tabindex', '0');
+  article.setAttribute('role', 'button');
+  article.setAttribute('aria-label', `Task ${task.id}`);
+
+  const failureBadge = failureCount >= 1
+    ? `<span class="pipeline-failure-badge" aria-label="${failureCount} failures">${failureCount} ✕</span>`
+    : '';
+
+  article.innerHTML = `
+    <div class="pipeline-card-header">
+      <span class="pipeline-task-id">${esc(task.id)}</span>
+      <span class="pipeline-domain-pill">${esc(domain)}</span>
+      ${failureBadge}
+      <span class="pipeline-card-spacer"></span>
+      <span class="pipeline-card-agent${agentName ? '' : ' pipeline-card-agent-none'}">${agentName ? esc(agentName) : '—'}</span>
+    </div>
+    <div class="pipeline-card-desc">${esc(task.description || task.id)}</div>
+    <div class="pipeline-card-time">${esc(timeSince)}</div>
+  `;
+
+  article.addEventListener('click', () => openSpecPanel(task.id));
+  article.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSpecPanel(task.id); }
+  });
+
+  return article;
+}
+
+function relativeTime(iso) {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso).getTime();
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+async function openSpecPanel(taskId) {
+  const panel = $('spec-panel');
+  const content = $('spec-content');
+  const title = $('spec-panel-title');
+  if (!panel || !content) return;
+
+  title.textContent = taskId;
+  content.textContent = 'Loading…';
+  panel.removeAttribute('hidden');
+
+  try {
+    const res = await fetch(`/api/spec/${encodeURIComponent(taskId)}`);
+    if (!res.ok) {
+      content.textContent = `Error: ${res.status} — spec not found`;
+      return;
+    }
+    const data = await res.json();
+    content.textContent = data.markdown || '(empty)';
+  } catch (_) {
+    content.textContent = 'Failed to load spec.';
+  }
+}
+
+/* Domain filter chips — initialize from localStorage, handle clicks */
+(function initDomainChips() {
+  for (const chip of document.querySelectorAll('.domain-chip')) {
+    if (chip.dataset.domain === pipelineDomainFilter) chip.classList.add('domain-chip-active');
+    chip.addEventListener('click', () => {
+      pipelineDomainFilter = chip.dataset.domain;
+      localStorage.setItem(DOMAIN_FILTER_KEY, pipelineDomainFilter);
+      for (const c of document.querySelectorAll('.domain-chip')) {
+        c.classList.toggle('domain-chip-active', c.dataset.domain === pipelineDomainFilter);
+      }
+      renderPipeline();
+    });
+  }
+})();
+
+/* Spec panel close button */
+(function initSpecClose() {
+  const btn = $('spec-close');
+  const panel = $('spec-panel');
+  if (btn && panel) {
+    btn.addEventListener('click', () => panel.setAttribute('hidden', ''));
+  }
+})();
+
 /* ── State sync ── */
 
 function syncState() {
@@ -272,24 +588,6 @@ function exitCard(card, onRemove) {
     card.remove();
     if (onRemove) onRemove();
   }, 300);
-}
-
-/* ── SSE dot: green/amber/red checked every 2s (AC3) ── */
-
-function updateSseDot() {
-  const rs = currentEs ? currentEs.readyState : 2;
-  if (rs === 1) {
-    sseDot.classList.remove('disconnected', 'connecting');
-    sseLabel.textContent = 'live';
-  } else if (rs === 0) {
-    sseDot.classList.remove('disconnected');
-    sseDot.classList.add('connecting');
-    sseLabel.textContent = 'connecting';
-  } else {
-    sseDot.classList.remove('connecting');
-    sseDot.classList.add('disconnected');
-    sseLabel.textContent = 'offline';
-  }
 }
 
 /* ── Approval card ── */
@@ -386,11 +684,6 @@ function buildAttentionCard(ev) {
     `<div class="card-ac-row"><span class="ac-id">${esc(ac.id)}</span><span>${esc(ac.text)}</span></div>`
   ).join('');
 
-  /* Cap agent note at 160 chars (AC5) */
-  const noteRaw = ev.agent_note || '';
-  const noteText = noteRaw.length > 160 ? noteRaw.slice(0, 160) + '…' : noteRaw;
-
-  /* AI draft panel (collapsed by default, inside the unblock section) */
   const draftText = ev.ai_draft || '';
   const draftPanelHtml = draftText ? `
     <div class="ai-draft-panel" id="${draftPanelId}" aria-label="AI draft decision" style="display:none">
@@ -403,12 +696,17 @@ function buildAttentionCard(ev) {
     </div>
   ` : '';
 
+  /* AI draft toggle hidden initially — revealed after Unblock is clicked */
   const draftToggleHtml = draftText ? `
-    <button class="ai-draft-toggle" aria-expanded="false" aria-controls="${draftPanelId}">
+    <button class="ai-draft-toggle" hidden aria-expanded="false" aria-controls="${draftPanelId}">
       AI Draft
       <span class="ai-draft-label">AI</span>
     </button>
   ` : '';
+
+  /* AC5: cap mailbox note at 160 chars */
+  const rawNote = ev.agent_note || '';
+  const noteText = rawNote.length > 160 ? rawNote.slice(0, 160) + '…' : rawNote;
 
   article.innerHTML = `
     <div class="card-meta">
@@ -422,28 +720,23 @@ function buildAttentionCard(ev) {
     <div class="card-task-title">${esc(ev.title || ev.task_id)}</div>
     ${noteText ? `<div class="card-agent-note" role="note">${esc(noteText)}</div>` : ''}
     ${acsHtml ? `<div class="card-acs"><div class="card-acs-label">Acceptance criteria context</div>${acsHtml}</div>` : ''}
-    <div class="card-unblock-section" id="${unblockSectionId}" style="display:none">
-      ${draftPanelHtml}
-      <div class="card-textarea-wrapper">
-        <label class="card-textarea-label" for="${textareaId}">Your decision</label>
-        <textarea
-          class="card-textarea"
-          id="${textareaId}"
-          placeholder="Type your decision for the agent..."
-          aria-required="true"
-        ></textarea>
-      </div>
-      <div class="card-actions">
-        ${draftToggleHtml}
-        <button class="btn-send" aria-label="Send decision back to ${esc(ev.agent)} for task ${esc(ev.task_id)}">Send reply</button>
-      </div>
+    ${draftPanelHtml}
+    <div class="card-textarea-wrapper" id="textarea-wrapper-${ev.id}" hidden>
+      <label class="card-textarea-label" for="${textareaId}">Your decision</label>
+      <textarea
+        class="card-textarea"
+        id="${textareaId}"
+        placeholder="Type your decision for the agent..."
+        aria-required="true"
+      ></textarea>
     </div>
-    <div class="card-initial-actions">
-      <button class="btn-unblock" aria-controls="${unblockSectionId}" aria-label="Unblock task ${esc(ev.task_id)} for ${esc(ev.agent)}">Unblock</button>
+    <div class="card-actions">
+      <button class="btn-unblock" aria-label="Unblock task ${esc(ev.task_id)} for agent ${esc(ev.agent)}">Unblock</button>
+      ${draftToggleHtml}
+      <button class="btn-send" hidden aria-label="Send decision back to ${esc(ev.agent)} for task ${esc(ev.task_id)}">Send reply</button>
     </div>
   `;
 
-  /* AI draft toggle */
   if (draftText) {
     const toggle = article.querySelector('.ai-draft-toggle');
     const panel = article.querySelector(`#${draftPanelId}`);
@@ -452,7 +745,6 @@ function buildAttentionCard(ev) {
       toggle.setAttribute('aria-expanded', String(!expanded));
       panel.style.display = expanded ? 'none' : '';
     });
-
     article.querySelector('.ai-draft-use-btn').addEventListener('click', () => {
       const textarea = article.querySelector(`#${textareaId}`);
       textarea.value = draftText;
@@ -460,18 +752,20 @@ function buildAttentionCard(ev) {
     });
   }
 
-  /* Unblock button: reveal textarea section (AC5) */
   const unblockBtn = article.querySelector('.btn-unblock');
-  const unblockSection = article.querySelector(`#${unblockSectionId}`);
-  const initialActions = article.querySelector('.card-initial-actions');
+  const sendBtn = article.querySelector('.btn-send');
+  const textareaWrapper = article.querySelector(`#textarea-wrapper-${ev.id}`);
+
+  /* AC5: Unblock click reveals textarea + Send reply */
   unblockBtn.addEventListener('click', () => {
-    unblockSection.style.display = '';
-    initialActions.style.display = 'none';
+    unblockBtn.setAttribute('hidden', '');
+    textareaWrapper.removeAttribute('hidden');
+    sendBtn.removeAttribute('hidden');
+    if (draftText) article.querySelector('.ai-draft-toggle').removeAttribute('hidden');
     article.querySelector(`#${textareaId}`).focus();
   });
 
-  /* Send reply: POST { action, text, agentName, taskId } (AC6) */
-  const sendBtn = article.querySelector('.btn-send');
+  /* AC6: Send reply — POST with agentName + taskId; shows Sending… while in-flight */
   sendBtn.addEventListener('click', () => {
     const textarea = article.querySelector(`#${textareaId}`);
     const text = textarea.value.trim();
@@ -523,17 +817,20 @@ function sendDecision(id, action, text) {
 /* ── SSE ── */
 
 function connect() {
-  currentEs = new EventSource(SSE_URL);
+  es = new EventSource(SSE_URL);
 
-  currentEs.addEventListener('open', () => {
+  es.addEventListener('open', () => {
     sseConnected = true;
     sseDot.classList.remove('disconnected');
     sseLabel.textContent = 'live';
     reconnectBanner.style.display = 'none';
     fetchQueue();
+    fetchPipeline();
+    fetchStuck();
+    pipelineBootstrapped = true;
   });
 
-  currentEs.addEventListener('approval', (e) => {
+  es.addEventListener('approval', (e) => {
     const ev = JSON.parse(e.data);
     const card = buildApprovalCard(ev);
     approvalCards.prepend(card);
@@ -541,7 +838,7 @@ function connect() {
     syncState();
   });
 
-  currentEs.addEventListener('attention', (e) => {
+  es.addEventListener('attention', (e) => {
     const ev = JSON.parse(e.data);
     const card = buildAttentionCard(ev);
     attentionCards.prepend(card);
@@ -549,7 +846,7 @@ function connect() {
     syncState();
   });
 
-  currentEs.addEventListener('resolve', (e) => {
+  es.addEventListener('resolve', (e) => {
     const ev = JSON.parse(e.data);
     const card = document.getElementById(`approval-${ev.id}`) || document.getElementById(`attention-${ev.id}`);
     if (!card) return;
@@ -560,18 +857,41 @@ function connect() {
     });
   });
 
-  currentEs.addEventListener('fleet-update', (e) => {
+  es.addEventListener('fleet-update', (e) => {
     const ev = JSON.parse(e.data);
     if (ev.type === 'fleet-update') {
       fleetLastEventTs = Date.now();
-      if (currentTab === 'fleet') fetchFleet();
+      if (currentTab === 'fleet') fetchFleet(ev.ts);
+
+      /* AC6: auto-dismiss stuck card if agent moved to a new task or was stopped */
+      if (ev.agent && stuckAgents.has(ev.agent)) {
+        const prev = agentLastTaskId.get(ev.agent);
+        if (ev.task !== undefined) agentLastTaskId.set(ev.agent, ev.task);
+        const movedOn = ev.task != null && ev.task !== prev;
+        const stopped = ev.action === 'stop' || ev.action === 'restart';
+        if (movedOn || stopped) dismissStuckAgent(ev.agent);
+      } else if (ev.agent && ev.task !== undefined) {
+        agentLastTaskId.set(ev.agent, ev.task);
+      }
     }
   });
 
-  currentEs.addEventListener('error', () => {
+  /* T15 AC2: handle stuck SSE event — insert card above Queue attention section */
+  es.addEventListener('stuck', (e) => {
+    const ev = JSON.parse(e.data);
+    if (!ev.agent) return;
+    stuckAgents.set(ev.agent, { agent: ev.agent, signal: ev.signal, detail: ev.detail, since: ev.since || new Date().toISOString() });
+    renderStuckSection();
+  });
+
+  es.addEventListener('pipeline-update', () => {
+    if (currentTab === 'pipeline') fetchPipeline();
+  });
+
+  es.addEventListener('error', () => {
     sseConnected = false;
     reconnectBanner.style.display = '';
-    currentEs.close();
+    es.close();
     setTimeout(connect, RECONNECT_DELAY_MS);
   });
 }
@@ -594,4 +914,52 @@ for (const [name, btn] of Object.entries(tabBtns)) {
 
 switchTab('fleet');
 connect();
-setInterval(updateSseDot, 2000);
+fetchStuck();
+initRestartModal();
+
+/* AC3: poll SSE readyState every 2 s to cycle dot green/amber/red */
+setInterval(() => {
+  if (!es) return;
+  if (es.readyState === EventSource.OPEN) {
+    sseDot.classList.remove('disconnected', 'connecting');
+  } else if (es.readyState === EventSource.CONNECTING) {
+    sseDot.classList.add('connecting');
+    sseDot.classList.remove('disconnected');
+  } else {
+    sseDot.classList.add('disconnected');
+    sseDot.classList.remove('connecting');
+  }
+}, 2000);
+
+/* Test injection helpers — used by qa-smoke.sh via browse js */
+window.__injectApproval = function(ev) {
+  approvalCards.prepend(buildApprovalCard(ev));
+  approvalCount++;
+  syncState();
+};
+window.__injectAttention = function(ev) {
+  attentionCards.prepend(buildAttentionCard(ev));
+  attentionCount++;
+  syncState();
+};
+window.__injectStuck = function(ev) {
+  stuckAgents.set(ev.agent, {
+    agent: ev.agent,
+    signal: ev.signal || 'silent',
+    detail: ev.detail || 'test signal',
+    since: ev.since || new Date().toISOString(),
+  });
+  renderStuckSection();
+};
+window.__injectFleetUpdate = function(ev) {
+  const payload = { type: 'fleet-update', ...ev };
+  if (payload.agent && stuckAgents.has(payload.agent)) {
+    const prev = agentLastTaskId.get(payload.agent);
+    if (payload.task !== undefined) agentLastTaskId.set(payload.agent, payload.task);
+    const movedOn = payload.task != null && payload.task !== prev;
+    const stopped = payload.action === 'stop' || payload.action === 'restart';
+    if (movedOn || stopped) dismissStuckAgent(payload.agent);
+  } else if (payload.agent && payload.task !== undefined) {
+    agentLastTaskId.set(payload.agent, payload.task);
+  }
+};

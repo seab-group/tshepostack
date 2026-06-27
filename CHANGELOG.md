@@ -2,6 +2,195 @@
 
 ## [Unreleased]
 
+### v1 test suite — gap tests for stale PID, loop threshold, signal precedence, n=0 (T16-amended)
+
+Four boundary and multi-signal test cases that were not covered by prior suites are now locked in. The loop detection threshold boundary (4 events vs. the 5-event threshold), the `fail_storm`-over-`loop` precedence rule, the stale-PID idempotent stop path with real OS liveness checks, and the `?n=0` lower-bound rejection in the log endpoint are all now exercised in their own isolated describe blocks.
+
+#### Added
+- `describe("fleet/stop stale PID")` — 1 test on port 7871: writes PID `99999` and uses real `defaultIsProcessAlive`/`defaultKillFn`; asserts POST `/api/fleet/stop` returns `{ ok: true }` even when the process does not exist (T16-amended AC1).
+- `describe("stuck loop threshold 4")` — 1 pure-unit test: 4 consecutive same-tool events must NOT produce a `loop` signal (`computeStuckSignals` called directly; threshold is 5) (T16-amended AC2).
+- `describe("stuck signal precedence")` — 1 pure-unit test: both `fail_storm` (failure\_count=2 + in\_progress) and `loop` (5 same-tool events) conditions active simultaneously; asserts `signal === "fail_storm"` (T16-amended AC3).
+- `describe("log n=0")` — 1 test on port 7872: GET `/api/log/agent-be?n=0` → HTTP 400, `{ error: "n must be 1-200" }` (T16-amended AC4).
+- 135 total tests (2 bash-wrapper + 133 server).
+
+### GET /api/stuck — regression guard against agentList ReferenceError (BUG-2)
+
+A static test now prevents the `GET /api/stuck` crash from coming back via a future merge conflict. The crash itself was already fixed in main (T11-amended renamed `agentList` to `supervisorAgentList`; T14 introduced the stuck route using the old name before that rename landed). The regression guard reads `server.ts` source at test time and asserts that `computeStuckSignals` is never called with `agentList` — a wrong variable name fails CI immediately, before any runtime crash can reach production.
+
+#### Added
+- `describe("BUG-2: GET /api/stuck agentList regression guard")` — 1 test in `server.test.ts`: reads `server.ts` with `readFileSync` and asserts `/computeStuckSignals\s*\(\s*agentList\b/` does not match (131 total: 2 bash-wrapper + 129 server).
+
+### POST body validation + draft-decision mailbox note (T9)
+
+All POST endpoints now reject requests immediately when the `Content-Type` header is missing or wrong, or when the body is not valid JSON. Previously each handler read raw body bytes and called `JSON.parse` independently — a missing header was silently accepted. Now a single shared `readAndValidatePostBody()` utility handles both checks and returns HTTP 400 before any filesystem operation is attempted.
+
+`POST /api/draft-decision` has been re-implemented: it no longer calls the Anthropic SDK or streams a response via SSE. It now appends a human-authored note directly to the target agent's mailbox file in the control repo and commits the change. This makes the endpoint consistent with how human decisions flow through the rest of the system.
+
+#### Added
+- `readAndValidatePostBody(req)` in `server-utils.ts` — shared Content-Type and JSON validation for all POST handlers; returns `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure (T9 AC1/AC2).
+- `describe("rawPath dot-segment preservation (AC4)")` — 3 unit tests verifying that `rawPath()` returns dot-segment paths unprocessed, unlike the `URL` API which normalizes them (T9 AC4).
+- `describe("GET /api/fleet absent/empty fleet.conf (AC7)")` — 2 tests verifying that `GET /api/fleet` returns HTTP 200 with `[]` when no agents are configured (T9 AC7).
+- `describe("malformed JSON body (AC1)")` and `describe("missing Content-Type (AC2)")` — 6 tests across all three POST endpoints confirming 400 responses (T9 AC1/AC2).
+- Current total: 122 tests (2 bash-wrapper + 120 server) after subsequent T15-amended additions.
+
+#### Changed
+- `POST /api/draft-decision` now appends `## from: human | <ts> | re: <taskId>\n<text>` to the agent's mailbox and commits via `gitCommitAndPush`. Returns JSON `{ ok: true }`. No longer calls the Anthropic SDK or streams SSE (T9 / T5).
+- `handleMailbox` and `handleApprove` now both validate Content-Type and JSON body via `readAndValidatePostBody` before any filesystem write (T9 AC1/AC2).
+- `import Anthropic from "@anthropic-ai/sdk"` removed from `server.ts` — no SDK dependency at runtime.
+
+### Stuck detection — malformed JSONL no longer crashes GET /api/stuck (T14-amended)
+
+A single corrupted line in an agent's `live-events.jsonl` (caused by a mid-write SIGTERM, a disk error, or any partial write) no longer returns a 500 from `GET /api/stuck`. Every `JSON.parse` call on individual JSONL lines in the stuck detection path is now wrapped in a per-line try/catch that returns null and filters the bad line out. The remaining valid lines are processed normally. If every line in the file is malformed, the endpoint returns `{ stuck: [] }` with HTTP 200. No stuck signals are reported for data that cannot be read; signals based on other agents are unaffected.
+
+#### Fixed
+- `computeStuckSignals` uses `.map(line => { try { return JSON.parse(line) } catch { return null } }).filter(Boolean)` on each JSONL line. A malformed line is silently discarded; it does not throw, does not truncate the result set, and does not cause the endpoint to return 500 (T14-amended AC1/AC2/AC3).
+- An all-malformed `live-events.jsonl` file yields `{ stuck: [] }` rather than a crash or a false signal (T14-amended AC4).
+- Audit of all other `JSON.parse` calls in `server.ts` and `server-utils.ts` confirms no bare JSONL-line parse exists outside this path (T14-amended AC5).
+
+#### Added
+- 3 new tests in `describe("stuck detection malformed JSONL")` in `server.test.ts` across two isolated servers (ports 7853/7854): 20-line file with 3 malformed lines yields correct signals from 17 valid lines (AC2), endpoint always returns 200 on malformed input (AC3), all-malformed file yields `{ stuck: [] }` (AC4) (126 total: 2 bash-wrapper + 124 server).
+
+### Fleet control — tighten agent validation to controlDir fleet.conf (T11-amended)
+
+Agent name validation for all fleet control endpoints now reads the fleet registry from the workspace's control repo rather than the local `supervisor/fleet.conf`. If no registry is found at startup, all agent names are immediately rejected — there is no fallback list. When the active workspace changes, the valid-agent set is rebuilt from the new workspace's registry; switching to a workspace with no registry empties the set rather than retaining the previous one.
+
+#### Changed
+- `validAgents` is now sourced from `controlDir/fleet.conf` (the control repo's fleet registry) instead of `supervisor/fleet.conf`. The supervisor fleet.conf is still read to set up log-file watchers, but it no longer governs which agent names are accepted by the API (T11-amended AC1).
+- `GET /api/fleet` now returns only agents present in `validAgents` — the list is no longer drawn from the supervisor fleet file (T11-amended AC4).
+
+#### Added
+- `rebuildValidAgents(dir)` in `server.ts` — rebuilds the `validAgents` Set from `dir/fleet.conf`; called at startup and on workspace switch (T11-amended AC1/AC3).
+- `POST /api/workspace-switch` triggers `rebuildValidAgents` with the new workspace's `controlDir`; if the new fleet.conf is absent, `validAgents` is emptied and a warning is written to stderr (T11-amended AC3).
+- 7 new tests in `server.test.ts` across 3 describe blocks covering AC2 (missing fleet.conf empties validAgents), AC3 (workspace switch rebuilds validAgents), and AC4 (GET /api/fleet reflects validAgents) — ports 7850/7851/7852 (123 total: 2 bash-wrapper + 121 server).
+
+#### Fixed
+- A missing `controlDir/fleet.conf` at startup no longer crashes the server. Instead `validAgents` is set to empty and a warning is written to stderr (T11-amended AC2).
+
+### Stuck detection engine — identify looping, silent, and failing agents (T14)
+
+Directors can now see at a glance which agents are stuck. `GET /api/stuck` computes three signal types in one call: `fail_storm` (task failure count ≥ 2), `loop` (last 5 JSONL events all share the same tool), and `silent` (no new event for 10 minutes). Agents in `needs_human`, `awaiting_info`, `complete`, or `open` status are excluded — they are already handled or have no active claim. A `stuck` SSE event fires edge-triggered when a new signal is detected, at most once per 60-second window per agent, so the console can surface stuck alerts without polling.
+
+#### Added
+- `GET /api/stuck` returns `{ stuck: StuckAgent[] }` where each entry carries `agent`, `signal` (`silent` | `loop` | `fail_storm`), `detail`, and `since` (T14 AC1).
+- `computeStuckSignals(agents, agentsHome, ledgerDir, nowMs?)` in `server-utils.ts` — pure utility reading each agent's `live-events.jsonl` tail (last 20 lines) and ledger to compute signals. `nowMs` is injectable for deterministic test control (T14 AC1–AC4).
+- `stuck` SSE event: edge-triggered broadcast with payload `{ agent, signal, detail }` when a new signal type is detected for an agent. Suppressed for subsequent evaluations with the same signal; cooldown of 60 s per agent (T14 AC7).
+- 8 new tests in `server.test.ts` covering all T14 ACs (116 total: 2 bash-wrapper + 114 server).
+
+#### Changed
+- Signal precedence when multiple signals fire: `fail_storm` > `loop` > `silent` — only the highest-precedence signal is reported per agent (T14 spec constraint).
+
+#### Fixed
+- Every `JSON.parse` call on JSONL lines is wrapped in try/catch. A single malformed line is silently skipped; it does not cause the endpoint to return 500 or truncate results for other agents (T14 AC5).
+- Missing or unreadable `live-events.jsonl` for one agent is caught gracefully; the agent is skipped and the response still includes signals for all other agents (T14 AC6).
+
+### Fleet control endpoints — stop, restart, pause, resume agents from the console (T11)
+
+Directors can now control individual agents directly from the Fleet tab without touching a terminal. Four new POST endpoints send OS-level signals to agent processes and respond immediately. Stop sends SIGTERM and, if the process is still alive after 5 seconds, SIGKILL. Restart stops the agent and re-launches it via `run-agent.sh`. Pause and resume send SIGSTOP and SIGCONT. All four validate the agent name against `fleet.conf` and read the agent PID from `supervisor/pids/{name}.pid`.
+
+#### Added
+- `POST /api/fleet/stop?agent=<name>` — graceful SIGTERM with SIGKILL fallback after 5 s; returns `{ ok: true }` when the process is confirmed dead (T11 AC1).
+- `POST /api/fleet/restart?agent=<name>` — stops the agent then spawns `supervisor/run-agent.sh <name>` as a detached subprocess; returns `{ ok: true }` immediately after spawn without waiting for Claude to become ready (T11 AC2).
+- `POST /api/fleet/pause?agent=<name>` — sends SIGSTOP; returns `{ ok: true }` (T11 AC3).
+- `POST /api/fleet/resume?agent=<name>` — sends SIGCONT; returns `{ ok: true }` (T11 AC4).
+- `fleet-update` SSE event broadcast after stop and restart with `{ type: "fleet-update", agent, action, ts }` — browsers refresh the fleet table immediately (T11 AC7).
+- `readPidFile`, `stopProcess`, `defaultIsProcessAlive`, `defaultKillFn`, and `KillFn`/`IsAliveFn` types exported from `server-utils.ts` — fully injectable for unit testing without real processes.
+- 25 new tests in `server.test.ts` across 8 describe blocks covering all 8 ACs (T11 AC1–AC8).
+
+#### Changed
+- Stop and double-stop on an already-dead process both return `{ ok: true }` — no error, no signal sent (T11 AC6/AC8).
+
+### Pipeline view — SSE-only updates, remove polling fallback (T13-amended)
+
+The pipeline view no longer has a polling fallback. Previously the implementation included a `setInterval`-based poll of `GET /api/pipeline` as a safety net. That code is removed: the SSE reconnect path already handles connection drops, and the polling created race conditions when a `pipeline-update` SSE event and a poll response arrived simultaneously. The view now bootstraps once on first tab activation and refreshes only via SSE or reconnect.
+
+#### Added
+- `pipelineBootstrapped` module-level flag in `console.js`: `switchTab('pipeline')` calls `fetchPipeline()` at most once per session on first activation (T13-amended AC2).
+- SSE `open` handler now calls `fetchPipeline()` and sets `pipelineBootstrapped = true` on every reconnect, ensuring the pipeline data is refreshed exactly once after each SSE reconnect (T13-amended AC4).
+- 2 new `describe` blocks in `server.test.ts` — 4 static-analysis tests verifying the bootstrap guard and SSE reconnect behavior in `console.js` without a live server (T13-amended AC1/AC2/AC4).
+
+#### Changed
+- Pipeline tab no longer calls `fetchPipeline()` on every tab switch — only on the first activation or after SSE reconnect (T13-amended AC2).
+- Reconnect banner (shared SSE status dot) is the only feedback on pipeline connection loss — no polling fallback is started (T13-amended AC3).
+
+#### Fixed
+- All five `EventSource.addEventListener` calls in `connect()` were attached to `currentEs` (which was `null` at call time) instead of `es` (the newly created `EventSource`). All listeners now correctly use `es` (`open`, `approval`, `attention`, `resolve`, `fleet-update`, `error`).
+
+### Pipeline view — task ledger overview with live SSE updates (T13)
+
+The console now has a **Pipeline tab** showing every task in the ledger at once. Directors can answer "how much work is left?" without SSH-ing into a box: tasks appear in four collapsible groups (In progress, Blocked, Open, Done), each with a count badge. Domain filter chips narrow the view to a single team. Clicking any card opens an inline spec panel that fetches and displays the raw task markdown — no file access required.
+
+#### Added
+- `GET /api/pipeline` reads all `*.task` files from `$CONTROL_DIR/ledger/`, extends `parseTaskLedger` with `updated_at` from file `mtime`, sorts tasks within each status group by `updated_at` descending, and returns `{ tasks: PipelineTask[], updatedAt: string }` (T13 AC1/AC2).
+- `GET /api/spec/:taskId` validates the task ID against `TASK_ID_RE`, reads `$CONTROL_DIR/tasks/{taskId}.md`, and returns `{ markdown: string }`. Errors: 400 invalid ID, 404 missing file, 503 no `CONTROL_DIR` (T13 AC7).
+- `pipeline-update` SSE event: `makeLedgerWatchHandler` hooks into the existing single ledger `fs.watch` watcher and broadcasts `{ type: "pipeline-update", task_id, status, agent }` on any `.task` file change. No second `fs.watch` call is opened (T13 AC3).
+- Pipeline tab panel in `index.html` with domain filter chips (All / be / fe / doc / qa), `#pipeline-groups` container, and `<aside id="spec-panel">` (T13 AC4/AC5/AC6).
+- Domain filter chips persist selection in `localStorage` under `console-pipeline-domain-filter` (T13 AC8).
+- `PipelineTask` TypeScript type exported from `server-utils.ts` (superset of `TaskEntry` with `updated_at: string`).
+- `makeLedgerWatchHandler(ledgerDir, broadcastFn)` exported from `server-utils.ts` for unit testing without a live server.
+- 3 new `describe` blocks in `server.test.ts` covering T13 AC1 (pipeline response format), AC2 (sort order), AC3 (single broadcast, agent field mapping), and AC7 (spec endpoint: 200/400/404/503).
+- 4 new assertions in `qa-smoke.sh` covering T13 AC4/AC5: pipeline endpoint 200, invalid spec ID returns 400, `pipeline-groups` element in page HTML, `tasks` key in pipeline JSON.
+
+#### Changed
+- `TASK_ID_RE` extended from `/^[A-Z]+-[0-9]+$/` to `/^[A-Z]+(-[0-9]+|[0-9]+)$/` — now accepts both `CONS-003` style and short-name `T13` style. All existing validation paths are unchanged.
+- `parseTaskLedger` return type widened from `TaskEntry[]` to `PipelineTask[]` — callers that used `TaskEntry[]` remain compatible (additive field only).
+
+### Startup cleanup — purge stale decision files older than 1 hour (v7.1)
+
+When the console restarts after a crash, any bash-wrapper approval requests that had been waiting longer than 1 hour are automatically purged before the HTTP server binds. This prevents stale approval cards from appearing in the Queue tab after a restart when the requesting agent has long since timed out and moved on. The cleanup is synchronous and completes before any client can connect.
+
+#### Added
+- `purgeStaleDecisionFiles(dir)` exported from `server-utils.ts`: two-pass synchronous sweep. First pass: deletes `*.json` request files whose `mtime` is older than 1 hour, plus their paired `*.decision.json` response files. Second pass: deletes standalone `*.decision.json` files older than 1 hour regardless of whether the paired request file is still fresh. Per-file errors are caught individually — one unreadable file does not abort the rest of the sweep (T8 AC1, AC2).
+- Cleanup call added to `server.ts` before `server.listen()` — the HTTP server does not bind until the sweep is complete (T8 AC5).
+- 6 new tests in `server.test.ts` covering T8 AC1 (old request file deleted), AC2 (paired request+decision deleted; standalone old decision deleted by second pass), AC3 (fresh file not deleted), and AC4 (missing dir and empty string both exit silently).
+
+### Log tail endpoint — GET /api/log/:agent + rate limiting (v7.1)
+
+Click any agent in the Fleet tab to open its log panel — the last 50 events from `live-events.jsonl` load instantly, and new events continue to stream in via the existing SSE connection. The `?n=` parameter lets you request up to 200 events for deeper history. A built-in token-bucket rate limiter (10 req/s per client IP) prevents runaway polling from overwhelming the server.
+
+#### Added
+- `GET /api/log/:agent?n=<count>` endpoint returns the last `n` lines of `~/agents/{agent}/logs/live-events.jsonl` as `{ events: LogEvent[] }`. Default `n=50`, max `n=200`.
+- `X-Log-Lines` response header reports the total number of non-empty lines in the file before the tail slice, providing pagination context without a separate request (AC6).
+- `readLogTail(logFile, n)` exported from `server-utils.ts`: reads the file whole, filters blank lines, slices the last `n`, parses each as JSON, and normalizes into `LogEvent` objects (`ts`, `tool`, `summary`, `path`). Absent or empty files return `{ events: [], totalLines: 0 }` — never 404 or 500 (AC4). Malformed JSONL lines are silently skipped (AC5).
+- `makeRateLimiter(maxPerSecond)` exported from `server-utils.ts`: module-level `Map<ip, { count, resetAt }>` token bucket with no external dependencies (AC7 constraint). State resets on server restart.
+- `LogEvent` TypeScript interface exported from `server-utils.ts` — `{ ts: string; tool: string; summary: string; path: string | null }`.
+- 8 new tests in `server.test.ts` covering AC1 (50-of-100 tail), AC2 (n validation: > 200 and non-numeric), AC3 (unknown agent → 404), AC4 (missing file → `{ events: [] }`), AC5 (bad JSONL line skipped), AC6 (X-Log-Lines header), and AC7 (11th request → 429).
+
+#### Changed
+- Unknown agent on `GET /api/log/:agent` returns 404 (not 400) — the agent name is valid but the log dir may not exist yet (AC3).
+
+### SSE fleet-watch — structured live-events.jsonl broadcast + Last-Event-ID replay (v7.1)
+
+The console now pushes structured agent telemetry to every connected browser tab the moment an agent writes a log line, without polling. When `live-events.jsonl` changes, the server reads the last JSON line, extracts `{ task, tool, summary }`, and broadcasts a named `event: fleet-update` SSE frame with a full payload. On reconnect, the server immediately replays the last known payload for every agent using the `Last-Event-ID` header, so tabs that briefly disconnect don't miss the current state. A 30-second keep-alive ping prevents proxy timeouts on long-running console sessions.
+
+#### Added
+- `makeWatchHandler` now reads the last line of `live-events.jsonl` on change, parses it, and broadcasts a named `event: fleet-update` SSE frame with payload `{ type, agent, task, tool, summary, ts }`. Unreadable files (ENOENT, permission error) are silently skipped — the watcher stays active (AC2/AC3)
+- `lastEventCache` (`Map<agent, payload>`) at module level in `server.ts`: stores the last broadcast payload per agent for Last-Event-ID replay. Cleared on server restart (AC4)
+- Last-Event-ID replay: on reconnect with a `Last-Event-ID` header, `/api/events` immediately sends the cached `fleet-update` payload for every agent that has one (AC4)
+- Initial `: ok\n\n` comment line written to SSE connections immediately after headers to prevent proxy buffering (AC1)
+- 30-second keep-alive ping (`: ping\n\n`) per SSE connection, using `setInterval` cleared on disconnect (AC6)
+- 6 new tests in `server.test.ts` covering AC1 (SSE headers and heartbeat), AC2 (structured fleet-update broadcast), AC3 (ENOENT silent skip), and AC5 (client disconnect cleanup)
+
+#### Changed
+- `/api/events` initial response changed from `: ping\n\n` to `: ok\n\n` (semantics: heartbeat, not a periodic ping)
+- `broadcast()` now accepts a complete SSE frame string (not raw JSON); callers are responsible for wrapping with `event:`/`data:` lines
+- `makeWatchHandler` signature extended: `makeWatchHandler(agent, logDir, broadcastFn, cache)` — `logDir` is needed to read `live-events.jsonl`; `cache` receives the last payload per agent
+- `sseClients` disconnect handler now also clears the per-connection ping interval to prevent memory leaks
+
+### Fleet tab UI polish — avatars, SSE dot, Unblock flow, responsive layout (v7.1)
+
+The Fleet tab and Queue tab now have the UI polish that turns a functional prototype into a production-grade console. Each fleet row shows a Dicebear initials avatar for at-a-glance agent identification, the SSE dot cycles green/amber/red in real time so you know the connection is live, the Unblock flow on attention cards reveals an inline textarea rather than navigating away, and the entire console is readable on an iPhone SE without horizontal scrolling.
+
+#### Added
+- Dicebear initials avatar (32×32) in each Fleet table row. URL constructed client-side from `a.name`; grey-circle fallback shown if the CDN is unreachable. Avatar hidden at 640px breakpoint to preserve stacked-card readability.
+- SSE status dot now cycles three states: green (connected), amber (reconnecting — `EventSource.CONNECTING`), red (closed — `EventSource.CLOSED`). Checked via `setInterval` every 2 seconds using `es.readyState`; transitions to red immediately on SSE error event.
+- Unblock inline flow on attention cards: clicking Unblock reveals an inline textarea and Send reply button without leaving the console. Send reply POSTs `{ action: 'unblock', text, agentName, taskId }` to `POST /api/decision`; button shows "Sending…" and is disabled while in-flight; card fades out on completion.
+- Responsive fleet table: below 640px, switches from standard table to stacked-card layout via CSS `data-label` technique (each `<td>` prefixes its column name). Below 375px, padding tightens to eliminate horizontal scroll on iPhone SE.
+- T6 AC1/AC2/AC4/AC5 assertions added to `qa-smoke.sh`: verifies Dicebear avatar src, elapsed time format, HIGH risk badge render, and Unblock button presence using `window.__injectApproval` and `window.__injectAttention` JS injection helpers.
+
+#### Changed
+- Fleet elapsed timer now updates every 10 seconds (was 5 seconds).
+- Card exit animation duration extended from 150ms to 300ms for a more deliberate confirmation feel.
+
 ### Port binding hardening — PORT override, EADDRINUSE crash, ready message (v7.1)
 
 The console server now validates the `PORT` environment variable before binding, crashes cleanly when the port is already in use, and prints a `Console ready →` line to stdout on successful startup. Operators can override the default port 7842 with any value in the 1024–65535 range; invalid values (non-numeric, below 1024, above 65535) exit immediately with a clear error before any socket is opened.
@@ -145,6 +334,24 @@ The console can now query and monitor the current state of all agents in the fle
 - fs.watch callback now listens for both `live-events.jsonl` (approval/log events) and `live.json` (fleet state changes)
 - `live.json` changes trigger `fleet-update` events; other changes remain invisible to SSE
 - Ended sessions now exclude stale `task` fields from fleet status (AC3: if `ended: true`, then `task: null`)
+
+### Design token corrections — typography, spacing scale, border radius (v7.1)
+
+The console design system is now fully token-driven. Every `margin`, `padding`, and `gap` in the CSS uses the 8-point spacing scale, border radii are declared once and applied everywhere, and the font stacks for body text and monospace elements are CSS variables rather than inline values. The card and badge radius corrections from the first pass (8px → 6px card, 4px badge, 6px button) are now codified in `--radius-*` tokens so future changes are a one-line edit.
+
+#### Added
+- `--font-body: 'Satoshi', 'DM Sans', system-ui, sans-serif` — typography token applied to `body { font-family }`
+- `--font-mono: 'JetBrains Mono', ui-monospace, monospace` — typography token applied to `code` and `.cmd` elements with `line-height: 1.6`
+- Spacing scale: `--space-1: 4px`, `--space-2: 8px`, `--space-3: 12px`, `--space-4: 16px`, `--space-6: 24px`, `--space-8: 32px`
+- Border-radius tokens: `--radius-card: 6px`, `--radius-badge: 4px`, `--radius-btn: 6px`
+- Status dot color tokens: `--color-green: #16a34a`, `--color-amber: #d97706`, `--color-red: #dc2626`, `--color-grey: #9ca3af` (separate from palette `--green`/`--amber`/`--red`)
+- `qa-smoke.sh` gains two T10 assertions: `body` `font-size` must equal `16px`; `.empty-section` `border-radius` must equal `6px`
+
+#### Changed
+- All component `margin`/`padding`/`gap` rules now use `--space-*` tokens — no raw `px` values remain in component rules
+- Card border-radius corrected to `6px` (`--radius-card`), badge to `4px` (`--radius-badge`), button to `6px` (`--radius-btn`) — corrects the interim 8px value from the initial design pass
+- SSE status dot now draws from `--color-green` and `--color-red` instead of the palette `--green`/`--red`
+- `body { line-height }` confirmed at `1.5`; `code, .cmd { line-height }` set to `1.6`
 
 ### Console UI — design system refinement
 

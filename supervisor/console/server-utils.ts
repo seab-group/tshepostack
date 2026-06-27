@@ -1,7 +1,9 @@
 // supervisor/console/server-utils.ts — pure utility functions, no side effects
-import type { ServerResponse } from "node:http";
-import { readdirSync, readFileSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { readdirSync, readFileSync, statSync, unlinkSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve, sep, dirname, basename } from "node:path";
+import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 // Scan each agent checkout directory for a git remote URL that contains the
@@ -157,10 +159,11 @@ export function resolvePort(portEnv: string | undefined): number {
   return n;
 }
 
-// Uppercase letters, hyphen, digits only — no path segments, no traversal.
-export const TASK_ID_RE = /^[A-Z]+-[0-9]+$/;
+// Uppercase letters then either hyphen+digits (CONS-003) or digits only (T13) — no traversal.
+export const TASK_ID_RE = /^[A-Z]+(-[0-9]+|[0-9]+)$/;
 
 export type TaskEntry = Record<string, string>;
+export type PipelineTask = TaskEntry & { updated_at: string };
 export type MailboxNote = { from: string; ts: string; taskId: string; body: string };
 
 // Parse fleet.conf: skip blank lines and # comments, return all agent names.
@@ -191,7 +194,8 @@ export function sendJson(res: ServerResponse, body: unknown, status = 200): void
 
 // Read all *.task files from ledgerDir and return parsed key:value objects.
 // Returns [] if the directory is absent, empty, or unreadable.
-export function parseTaskLedger(ledgerDir: string): TaskEntry[] {
+// updated_at is derived from each file's mtime (most recently kernel/task-updated time).
+export function parseTaskLedger(ledgerDir: string): PipelineTask[] {
   let files: string[];
   try {
     files = readdirSync(ledgerDir).filter((f) => f.endsWith(".task"));
@@ -199,7 +203,8 @@ export function parseTaskLedger(ledgerDir: string): TaskEntry[] {
     return [];
   }
   return files.map((f) => {
-    const content = readFileSync(join(ledgerDir, f), "utf8");
+    const filePath = join(ledgerDir, f);
+    const content = readFileSync(filePath, "utf8");
     const entry: TaskEntry = {};
     for (const line of content.split("\n")) {
       const colon = line.indexOf(":");
@@ -208,8 +213,75 @@ export function parseTaskLedger(ledgerDir: string): TaskEntry[] {
       const value = line.slice(colon + 1).trim();
       if (key) entry[key] = value;
     }
-    return entry;
+    let updated_at: string;
+    try {
+      updated_at = statSync(filePath).mtime.toISOString();
+    } catch {
+      updated_at = new Date(0).toISOString();
+    }
+    return { ...entry, updated_at } as PipelineTask;
   });
+}
+
+// Delete stale decision request files (and their paired .decision.json) older than 1 hour.
+// Also deletes orphaned .decision.json files older than 1 hour.
+// Runs synchronously at startup; silently skips unreadable files.
+export function purgeStaleDecisionFiles(decisionsDir: string): void {
+  if (!decisionsDir) return;
+  let files: string[];
+  try {
+    files = readdirSync(decisionsDir);
+  } catch {
+    return;
+  }
+  const ONE_HOUR = 60 * 60 * 1000;
+  const now = Date.now();
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    const fp = join(decisionsDir, f);
+    try {
+      const mtime = statSync(fp).mtime.getTime();
+      if (now - mtime <= ONE_HOUR) continue;
+      try { unlinkSync(fp); } catch { /* already removed */ }
+      if (!f.endsWith(".decision.json")) {
+        const decFp = join(decisionsDir, f.slice(0, -".json".length) + ".decision.json");
+        try { unlinkSync(decFp); } catch { /* no paired file */ }
+      }
+    } catch {
+      // unreadable or missing — skip
+    }
+  }
+}
+
+// Returns an fs.watch callback for the ledger directory.
+// Broadcasts a pipeline-update SSE event whenever a .task file changes.
+// Exported for unit tests; in server.ts this is registered at most once (no duplicate watchers).
+export function makeLedgerWatchHandler(
+  ledgerDir: string,
+  broadcastFn: (frame: string) => void,
+): (_event: string, filename: string | null) => void {
+  return (_event, filename) => {
+    if (!filename || !filename.endsWith(".task")) return;
+    const taskId = filename.slice(0, -".task".length);
+    if (!TASK_ID_RE.test(taskId)) return;
+    let status: string | null = null;
+    let agent: string | null = null;
+    try {
+      const content = readFileSync(join(ledgerDir, filename), "utf8");
+      for (const line of content.split("\n")) {
+        const colon = line.indexOf(":");
+        if (colon === -1) continue;
+        const key = line.slice(0, colon).trim();
+        const val = line.slice(colon + 1).trim();
+        if (key === "status") status = val || null;
+        if (key === "claimed_by") agent = val && val !== "-" ? val : null;
+      }
+    } catch {
+      // task file deleted — broadcast with null status/agent
+    }
+    const payload = JSON.stringify({ type: "pipeline-update", task_id: taskId, status, agent });
+    broadcastFn(`event: pipeline-update\ndata: ${payload}\n\n`);
+  };
 }
 
 export type GitSpawnResult = { code: number; out: string; err: string };
@@ -294,6 +366,60 @@ export function readApprovals(decisionsDir: string | undefined): ApprovalItem[] 
     });
 }
 
+export interface LogEvent {
+  ts: string;
+  tool: string;
+  summary: string;
+  path: string | null;
+}
+
+// Read the last n lines of a JSONL log file. Silently skips malformed lines (AC5).
+// Returns { events: [], totalLines: 0 } when the file is absent or empty (AC4).
+export function readLogTail(logFile: string, n: number): { events: LogEvent[]; totalLines: number } {
+  let content: string;
+  try {
+    content = readFileSync(logFile, "utf8");
+  } catch {
+    return { events: [], totalLines: 0 };
+  }
+  const lines = content.split("\n").filter((l) => l.trim() !== "");
+  const totalLines = lines.length;
+  const events: LogEvent[] = [];
+  for (const line of lines.slice(-n)) {
+    try {
+      const ev = JSON.parse(line) as Record<string, unknown>;
+      events.push({
+        ts: typeof ev.ts === "string" ? ev.ts : "",
+        tool: typeof ev.tool === "string" ? ev.tool : "",
+        summary: typeof ev.summary === "string" ? ev.summary : "",
+        path: typeof ev.path === "string" ? ev.path : null,
+      });
+    } catch {
+      // AC5: silently skip malformed lines
+    }
+  }
+  return { events, totalLines };
+}
+
+// Simple token bucket rate limiter — caller owns state, resets when the returned object is GC'd.
+// check(ip) returns true (allowed) or false (over limit → respond 429).
+export function makeRateLimiter(maxPerSecond: number): { check: (ip: string) => boolean } {
+  const map = new Map<string, { count: number; resetAt: number }>();
+  return {
+    check(ip: string): boolean {
+      const now = Date.now();
+      const entry = map.get(ip);
+      if (!entry || now >= entry.resetAt) {
+        map.set(ip, { count: 1, resetAt: now + 1000 });
+        return true;
+      }
+      if (entry.count >= maxPerSecond) return false;
+      entry.count++;
+      return true;
+    },
+  };
+}
+
 // Parse a mailbox file's content into an array of note objects.
 // Returns [] when the file contains only the <!-- cleared --> marker.
 export function parseMailboxNotes(content: string): MailboxNote[] {
@@ -316,3 +442,270 @@ export function parseMailboxNotes(content: string): MailboxNote[] {
   }
   return notes;
 }
+
+// T14: Stuck detection
+
+export interface StuckAgent {
+  agent: string;
+  signal: "silent" | "loop" | "fail_storm";
+  detail: string;
+  since: string;
+}
+
+const STUCK_SILENT_SECONDS = 600;
+const STUCK_IDLE_STATUSES = new Set(["needs_human", "awaiting_info", "complete", "open"]);
+
+// Compute stuck signals for a list of agents.
+// nowMs is injectable for deterministic tests.
+export function computeStuckSignals(
+  agents: string[],
+  agentsHome: string,
+  ledgerDir: string,
+  nowMs: number = Date.now(),
+): StuckAgent[] {
+  const tasks = parseTaskLedger(ledgerDir);
+
+  const agentTask = new Map<string, { failureCount: number; status: string }>();
+  for (const task of tasks) {
+    const cb = task.claimed_by;
+    if (cb && cb !== "-" && cb !== "") {
+      const fc = parseInt(task.failure_count ?? "0", 10);
+      agentTask.set(cb, { failureCount: Number.isFinite(fc) ? fc : 0, status: task.status ?? "" });
+    }
+  }
+
+  const stuck: StuckAgent[] = [];
+  const sinceIso = new Date(nowMs).toISOString();
+
+  for (const agent of agents) {
+    const taskMeta = agentTask.get(agent);
+
+    // AC8: skip agents in idle/terminal statuses
+    if (taskMeta && STUCK_IDLE_STATUSES.has(taskMeta.status)) continue;
+
+    // AC4: fail_storm takes highest precedence
+    if (taskMeta && taskMeta.failureCount >= 2 && taskMeta.status !== "needs_human" && taskMeta.status !== "awaiting_info") {
+      stuck.push({ agent, signal: "fail_storm", detail: `${taskMeta.failureCount} failed attempts`, since: sinceIso });
+      continue;
+    }
+
+    // Read last 20 JSONL lines; skip malformed (AC5/AC6)
+    let validEvents: Record<string, unknown>[] = [];
+    try {
+      const content = readFileSync(join(agentsHome, agent, "logs", "live-events.jsonl"), "utf8");
+      const rawLines = content.split("\n").filter((l) => l.trim() !== "");
+      validEvents = rawLines
+        .slice(-20)
+        .map((line) => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return null; } })
+        .filter((e): e is Record<string, unknown> => e !== null);
+    } catch {
+      // AC6: missing/unreadable log — skip gracefully
+      continue;
+    }
+
+    if (validEvents.length === 0) continue;
+
+    // AC3: loop — last 5 valid events all have same non-null tool
+    if (validEvents.length >= 5) {
+      const last5 = validEvents.slice(-5);
+      const tools = last5.map((e) => (typeof e.tool === "string" && e.tool !== "") ? e.tool : null);
+      if (tools.every((t) => t !== null) && new Set(tools).size === 1) {
+        stuck.push({ agent, signal: "loop", detail: `looping on ${tools[0]}`, since: sinceIso });
+        continue;
+      }
+    }
+
+    // AC2: silent — last valid event ts more than 600s ago
+    const lastEvent = validEvents[validEvents.length - 1];
+    const tsMs = typeof lastEvent.ts === "string" ? new Date(lastEvent.ts).getTime() : 0;
+    if (tsMs > 0 && (nowMs - tsMs) / 1000 > STUCK_SILENT_SECONDS) {
+      const minutes = Math.round((nowMs - tsMs) / 60_000);
+      stuck.push({ agent, signal: "silent", detail: `silent for ${minutes}m`, since: sinceIso });
+    }
+  }
+
+  return stuck;
+}
+
+// T11: Fleet process control types and utilities
+
+export type KillFn = (pid: number, signal: string) => void;
+export type IsAliveFn = (pid: number) => boolean;
+
+// Read PID from a pid file; returns null if missing, unreadable, or not a positive integer.
+export function readPidFile(pidPath: string): number | null {
+  try {
+    const pid = parseInt(readFileSync(pidPath, "utf8").trim(), 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+// Check process liveness via signal 0 (no signal sent; ESRCH if absent).
+export function defaultIsProcessAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// Send a signal; swallows if the process has already exited.
+export function defaultKillFn(pid: number, signal: string): void {
+  try { process.kill(pid, signal as NodeJS.Signals); } catch { /* already gone */ }
+}
+
+// Send SIGTERM; fire SIGKILL after stopTimeoutMs (default 5000ms) if still alive.
+// Resolves when the process is confirmed dead or SIGKILL has fired.
+// Returns immediately without sending any signal if the process is already dead (AC6/AC8).
+export async function stopProcess(
+  pid: number,
+  opts: { killFn?: KillFn; isAliveFn?: IsAliveFn; stopTimeoutMs?: number } = {},
+): Promise<void> {
+  const kill = opts.killFn ?? defaultKillFn;
+  const isAlive = opts.isAliveFn ?? defaultIsProcessAlive;
+  const ms = opts.stopTimeoutMs ?? 5_000;
+
+  if (!isAlive(pid)) return;
+  kill(pid, "SIGTERM");
+
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearInterval(poll);
+      clearTimeout(sigkillTimer);
+      resolve();
+    };
+    const sigkillTimer = setTimeout(() => { kill(pid, "SIGKILL"); finish(); }, ms);
+    const poll = setInterval(() => { if (!isAlive(pid)) finish(); }, 50);
+  });
+}
+
+// T17: Workspace registry
+
+export interface Workspace {
+  id: string;
+  name: string;
+  controlDir: string;
+  createdAt: string;
+}
+
+export interface WorkspaceRegistry {
+  workspaces: Workspace[];
+  activeId: string | null;
+}
+
+export function defaultWorkspacesPath(): string {
+  return join(homedir(), ".gstack-console", "workspaces.json");
+}
+
+export function readWorkspaceRegistry(filePath: string): WorkspaceRegistry {
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8")) as WorkspaceRegistry;
+  } catch {
+    return { workspaces: [], activeId: null };
+  }
+}
+
+export function writeWorkspaceRegistry(filePath: string, registry: WorkspaceRegistry): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, JSON.stringify(registry, null, 2));
+}
+
+// AC5: no registry → create with CONTROL_DIR as single active workspace.
+// AC6: registry exists but lacks CONTROL_DIR → append without changing activeId.
+export function bootstrapWorkspace(controlDir: string, workspacesPath: string): void {
+  if (!controlDir) return;
+  const reg = readWorkspaceRegistry(workspacesPath);
+  if (reg.workspaces.some((w) => w.controlDir === controlDir)) return;
+  const ws: Workspace = {
+    id: randomUUID(),
+    name: basename(controlDir),
+    controlDir,
+    createdAt: new Date().toISOString(),
+  };
+  reg.workspaces.push(ws);
+  if (!reg.activeId) reg.activeId = ws.id;
+  writeWorkspaceRegistry(workspacesPath, reg);
+}
+
+// T19: Cost tracker
+
+export interface CostAgentRow {
+  agent: string;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+}
+
+export interface CostResponse {
+  agents: CostAgentRow[];
+  total: { tokens_in: number; tokens_out: number; cost_usd: number };
+  cachedAt: string;
+}
+
+// Read each agent's live-events.jsonl and aggregate token usage.
+// Only includes agents that have at least one event with a numeric cost_usd.
+// Events missing cost_usd or with non-numeric cost_usd are skipped (AC4).
+// If sinceIso is provided, only events with ts >= sinceIso are counted (AC5).
+export function computeCostData(
+  agents: string[],
+  agentsHome: string,
+  sinceIso?: string,
+): CostResponse {
+  const sinceMs = sinceIso ? new Date(sinceIso).getTime() : 0;
+  const rows: CostAgentRow[] = [];
+
+  for (const agent of agents) {
+    let ti = 0, to = 0, cu = 0, hasCost = false;
+    try {
+      const content = readFileSync(join(agentsHome, agent, "logs", "live-events.jsonl"), "utf8");
+      for (const line of content.split("\n")) {
+        if (!line.trim()) continue;
+        let ev: Record<string, unknown>;
+        try { ev = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+        if (sinceMs > 0 && typeof ev.ts === "string") {
+          if (new Date(ev.ts).getTime() < sinceMs) continue;
+        }
+        if (!("cost_usd" in ev)) continue;
+        const c = ev.cost_usd;
+        if (typeof c !== "number" || !Number.isFinite(c)) continue;
+        hasCost = true;
+        if (typeof ev.tokens_in === "number") ti += ev.tokens_in;
+        if (typeof ev.tokens_out === "number") to += ev.tokens_out;
+        cu += c;
+      }
+    } catch { continue; }
+    if (hasCost) {
+      rows.push({ agent, tokens_in: ti, tokens_out: to, cost_usd: Math.round(cu * 10000) / 10000 });
+    }
+  }
+
+  const total = {
+    tokens_in: rows.reduce((s, r) => s + r.tokens_in, 0),
+    tokens_out: rows.reduce((s, r) => s + r.tokens_out, 0),
+    cost_usd: Math.round(rows.reduce((s, r) => s + r.cost_usd, 0) * 10000) / 10000,
+  };
+  return { agents: rows, total, cachedAt: new Date().toISOString() };
+}
+
+// Validate Content-Type and parse JSON body for POST handlers.
+// Returns { ok: true; json: unknown; raw: string } on success or
+// { ok: false; statusCode: number; error: string } on failure.
+export async function readAndValidatePostBody(
+  req: IncomingMessage,
+): Promise<{ ok: true; json: unknown; raw: string } | { ok: false; statusCode: number; error: string }> {
+  const ct = req.headers["content-type"] ?? "";
+  if (!ct.includes("application/json")) {
+    return { ok: false, statusCode: 400, error: "content-type must be application/json" };
+  }
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  const raw = Buffer.concat(chunks).toString();
+  try {
+    const json = JSON.parse(raw) as unknown;
+    return { ok: true, json, raw };
+  } catch {
+    return { ok: false, statusCode: 400, error: "invalid JSON body" };
+  }
+}
+
