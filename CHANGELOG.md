@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Cost tab UI — per-agent cost table with live SSE refresh (T20)
+
+The Cost tab now shows a real breakdown table. On first activation the console fetches `GET /api/cost` and renders one row per agent — Agent name, Tokens In, Tokens Out, Cost (USD) — plus a bold Total footer row. Cost values are formatted to four decimal places (`$0.0042`); token counts use thousands separators. A "Last updated: Xs ago" line below the table reads the `cachedAt` field from the server response. When a `fleet-update` SSE event arrives while the Cost tab is active, the table refreshes automatically, throttled to at most one fetch every 30 seconds. When no agents have emitted cost events yet, the table body shows a single centered message instead of an empty grid.
+
+#### Added
+- `<table id="cost-table">` with Agent / Tokens In / Tokens Out / Cost (USD) columns, `<tbody id="cost-tbody">`, `<tfoot id="cost-tfoot">`, and `<p id="cost-last-updated">` line in `index.html` — replaces the static `.cost-placeholder` div (T20 AC1).
+- `fetchCost()` and `renderCost(data)` in `console.js` — `fetchCost` guards with `lastCostFetch` timestamp (30s debounce); `renderCost` uses `Intl.NumberFormat` for 4-dp cost and thousands-sep tokens, writes the tfoot Total row, and updates the "Last updated" paragraph (T20 AC2/AC5).
+- `costBootstrapped` flag in `console.js` — first Cost tab click calls `fetchCost()` once; subsequent clicks reuse the cached display until the next SSE event triggers a refresh (T20 AC3).
+- `fleet-update` SSE handler extended: when `currentTab === 'cost'` and 30s have elapsed since last fetch, calls `fetchCost()` (T20 AC4).
+- Empty-state row: when `data.agents` is empty, tbody shows `<td colspan="4">No cost data yet — agents emit cost events as they run.</td>` (T20 AC6).
+- Cost-tab CSS in `styles.css` — `.cost-table`, `.cost-table th/td/tfoot`, `.cost-empty`, `.cost-num` (right-aligned numeric columns), hover-row background.
+- 4 new assertions in `qa-smoke.sh` — `id="cost-table"` in HTML, `id="cost-tbody"` in HTML, `GET /api/cost` HTTP 200, `"agents"` key in cost JSON response — bringing the total to 26 checks (T20 AC1/AC6/AC7).
+
 ### Cost tracker cache — dedicated verify describe blocks lock in the cache contract (T19-amended)
 
 Four new describe blocks in `server.test.ts` tighten the test coverage on T19's cache implementation. Each block isolates one cache behavior — the `cachedAt` field, the 30-second TTL, workspace-switch invalidation, and the `?since=` cache bypass — so a future regression in any of these four invariants fails one clearly-named test rather than a general aggregation test.

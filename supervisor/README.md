@@ -11,14 +11,14 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `wake-listen.ts` | Supabase Realtime subscriber — wakes idle agents in <1s cross-machine |
 | `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE; T11: fleet control routes — POST /api/fleet/stop, /restart, /pause, /resume; T11-amended: shim removed — `validAgents` built solely from `controlDir/fleet.conf` via `rebuildValidAgents()`, called at startup and on workspace switch; T5: `handleDraftDecision` rewritten — Anthropic SDK dependency removed, endpoint now appends a timestamped human note block to the agent's mailbox file and calls `gitCommitAndPush`; T17: workspace registry endpoints — GET/POST `/api/workspaces`, DELETE `/api/workspaces/:id`, POST `/api/workspaces/:id/activate` (reloads `validAgents` from new workspace fleet.conf before SSE broadcast); startup bootstrap: `bootstrapWorkspace(controlDir, workspacesPath)` auto-registers `CONTROL_DIR` as a workspace if absent or not yet listed (AC5/AC6); T19: `GET /api/cost` — aggregates `tokens_in`, `tokens_out`, `cost_usd` per agent from `~/agents/<agent>/logs/live-events.jsonl`; 30s workspace-keyed in-memory cache (`costCache: Map<wsId, {data, expiresAt}>`); `?since=ISO` bypasses cache and computes fresh; `POST /api/workspaces/:id/activate` calls `costCache.delete(reg.activeId)` before switching; T21: trust ledger endpoints — GET `/api/trust` (returns rules or `{ rules: [] }` when file absent), POST `/api/trust` (validates agent against `validAgents`, pattern as non-empty string, action as `approve`|`reject`; appends rule via read-modify-write), DELETE `/api/trust/:id` (removes rule by id; 204 on success, 404 if not found)) |
 | `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved) |
-| `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support, Pipeline tab panel with domain filter chips and spec panel; T18: workspace switcher `<details>/<summary>` pill between the page subtitle and SSE dot — dropdown lists registered workspaces with active checkmark; inline "+ Add workspace" form with Name + Control directory fields and error slot) |
-| `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility, Pipeline tab with collapsible status groups, domain filter chips persisted in localStorage, spec panel on card click, `pipeline-update` SSE listener; T13-amended: `pipelineBootstrapped` one-shot guard on tab activate, `fetchPipeline()` called on SSE reconnect, all SSE listeners fixed from `currentEs` → `es`; T18: `workspaceRegistry` state, `fetchWorkspaces()` called on SSE connect, `renderWorkspaces()` (builds full dropdown list), `updateWorkspacePill()` (SSE-driven pill + checkmark update without rebuilding list), `activateWorkspace()` (POSTs to `/api/workspaces/:id/activate`), `initWorkspaceSwitcher()` IIFE (outside-click + Escape close, "+ Add workspace" expand, form submit with 400 error display and auto-activate on success), `workspace-switch` SSE listener) |
-| `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces, pipeline group/card/filter/spec-panel component styles; T18: `.workspace-switcher`/`.workspace-pill` (monospace badge with `▾` arrow, amber border when open), `.workspace-dropdown` (absolute panel, z-index 200), `.workspace-item`/`.workspace-item-active`/`.workspace-item-check`, `.workspace-add-section`/`.workspace-add-btn`, `.workspace-form`/`.workspace-form-field`/`.workspace-form-error` (red), `.workspace-register-btn` (amber)) |
+| `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support, Pipeline tab panel with domain filter chips and spec panel; T18: workspace switcher `<details>/<summary>` pill between the page subtitle and SSE dot — dropdown lists registered workspaces with active checkmark; inline "+ Add workspace" form with Name + Control directory fields and error slot; T20: replaces `.cost-placeholder` div with `<table class="cost-table" id="cost-table">` — thead with Agent / Tokens In / Tokens Out / Cost (USD) columns, `<tbody id="cost-tbody">`, `<tfoot id="cost-tfoot">`; `<p id="cost-last-updated" class="cost-last-updated">` paragraph below the table) |
+| `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility, Pipeline tab with collapsible status groups, domain filter chips persisted in localStorage, spec panel on card click, `pipeline-update` SSE listener; T13-amended: `pipelineBootstrapped` one-shot guard on tab activate, `fetchPipeline()` called on SSE reconnect, all SSE listeners fixed from `currentEs` → `es`; T18: `workspaceRegistry` state, `fetchWorkspaces()` called on SSE connect, `renderWorkspaces()` (builds full dropdown list), `updateWorkspacePill()` (SSE-driven pill + checkmark update without rebuilding list), `activateWorkspace()` (POSTs to `/api/workspaces/:id/activate`), `initWorkspaceSwitcher()` IIFE (outside-click + Escape close, "+ Add workspace" expand, form submit with 400 error display and auto-activate on success), `workspace-switch` SSE listener; T20: `COST_URL` constant, `lastCostFetch` module-level timestamp (0 on load; set to `Date.now()` on each fetch), `costBootstrapped` flag (one-shot guard preventing re-fetch on repeated Cost tab clicks), `fetchCost()` (updates `lastCostFetch`, calls `GET /api/cost`, passes response to `renderCost()`), `renderCost(data)` (per-row `Intl.NumberFormat` for 4-dp cost and thousands-sep tokens, empty-state colspan=4 message, bold Total tfoot row, "Last updated: Xs ago" paragraph from `cachedAt`); `fleet-update` SSE handler extended: calls `fetchCost()` when `currentTab === 'cost'` and `Date.now() - lastCostFetch >= 30000`) |
+| `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces, pipeline group/card/filter/spec-panel component styles; T18: `.workspace-switcher`/`.workspace-pill` (monospace badge with `▾` arrow, amber border when open), `.workspace-dropdown` (absolute panel, z-index 200), `.workspace-item`/`.workspace-item-active`/`.workspace-item-check`, `.workspace-add-section`/`.workspace-add-btn`, `.workspace-form`/`.workspace-form-field`/`.workspace-form-error` (red), `.workspace-register-btn` (amber); T20: `.cost-table` (full-width, `border-collapse: collapse`), `.cost-table th` (mono 10px uppercase, letter-spacing 0.08em), `.cost-table td` (mono 12px, `var(--space-3)` padding, bottom border), `.cost-table tbody tr:hover td` (surface background), `.cost-table tfoot td` (top border, no bottom border), `.cost-empty` (centered dim placeholder for empty-state row), `.cost-updated` (mono 11px dim — note: HTML class is `cost-last-updated`), `.cost-num`/`.cost-num-col` (right-aligned numeric columns)) |
 | `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation (`TASK_ID_RE` supports both `CONS-003` and `T13` styles), fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), `makeLedgerWatchHandler` (broadcasts `pipeline-update` SSE on `.task` file changes), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files), `PipelineTask` type (T13); T11: `readPidFile` (reads PID from a pid file), `stopProcess` (SIGTERM + SIGKILL-after-5s async stop), `defaultIsProcessAlive` (signal-0 liveness check), `defaultKillFn` (signal sender), `KillFn`/`IsAliveFn` injectable types; T14: `computeStuckSignals` (reads each agent's JSONL tail + ledger, returns `StuckAgent[]` with silent/loop/fail_storm signals), `StuckAgent` type; T9: `readAndValidatePostBody` (validates Content-Type header + JSON body for all POST handlers; returns `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure); T17: `Workspace`/`WorkspaceRegistry` types, `defaultWorkspacesPath` (`~/.gstack-console/workspaces.json`), `readWorkspaceRegistry` (reads file; returns empty registry on missing file), `writeWorkspaceRegistry` (mkdir-p + write), `bootstrapWorkspace` (idempotent: no-op if controlDir already listed; creates registry with controlDir as active workspace if absent, appends if registry exists but lacks that path); T19: `computeCostData(agents, agentsHome, sinceIso?)` (reads each agent's `logs/live-events.jsonl`, skips events without `cost_usd` or with non-numeric `cost_usd`, accumulates per-agent totals rounded to 4 dp), `CostAgentRow` type `{ agent: string; tokens_in: number; tokens_out: number; cost_usd: number }`, `CostResponse` type `{ agents: CostAgentRow[]; total: { tokens_in, tokens_out, cost_usd }; cachedAt: string }`; T21: `TrustRule` type `{ id: string; agent: string; pattern: string; action: "approve" | "reject"; createdAt: string }`, `TrustLedger` type `{ rules: TrustRule[] }`, `defaultTrustPath` (`~/.gstack-console/trust.json`), `readTrustLedger` (parse file; returns `{ rules: [] }` on missing file or malformed JSON), `writeTrustLedger` (mkdir-p + `JSON.stringify` with 2-space indent) (v7.1) |
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
 | `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4), workspace registry (T17 AC1-AC7: GET/POST /api/workspaces, DELETE /api/workspaces/:id, POST /api/workspaces/:id/activate, bootstrapWorkspace AC5/AC6, validAgents reload AC7), T17a back-compat (CONTROL_DIR first boot AC1, existing registry AC2, validAgents from fleet.conf AC3, missing fleet.conf AC4), and T19 cost tracker (AC1: aggregation with known JSONL totals, AC2: 30s cache hit — second call uses cached result, AC3: cache invalidation on workspace-switch via `costInvalidateFn`, AC4: malformed `cost_usd` skipped without 500, AC5: `?since=` filter bypasses cache and returns filtered totals, AC6: no-cost-data → empty agents array), T19-amended cache contract tests (cachedAt ISO string AC1, TTL spy/hit AC2, workspace-switch invalidation AC3, since-bypass double-call AC4/AC5 — ports 7894/7895/7896) (148 total: 2 bash-wrapper + 146 server) |
-| `console/qa-smoke.sh` | QA smoke test for console UI — boots server on a random free port, asserts all GET endpoints return 200, T13 AC4/AC5 (pipeline JSON + `pipeline-groups` element), T15 AC1/AC2 (stuck endpoint + `stuck-cards` element + `stuck-alert-slot` DOM order), T16 AC6/AC7 (JSON content-type headers, fleet stop mock PID), T18 AC1 (`workspace-pill` element in HTML), T17 AC1 (`GET /api/workspaces` returns 200 with `workspaces` key) (v7.1) |
+| `console/qa-smoke.sh` | QA smoke test for console UI — boots server on a random free port, asserts all GET endpoints return 200, T13 AC4/AC5 (pipeline JSON + `pipeline-groups` element), T15 AC1/AC2 (stuck endpoint + `stuck-cards` element + `stuck-alert-slot` DOM order), T16 AC6/AC7 (JSON content-type headers, fleet stop mock PID), T18 AC1 (`workspace-pill` element in HTML), T17 AC1 (`GET /api/workspaces` returns 200 with `workspaces` key), T20 AC1/AC7 (`index.html` contains `cost-table` and `cost-tbody` elements), T20 AC6 (`GET /api/cost` returns 200 with `agents` key) — 26 checks total (v7.1) |
 
 ---
 
@@ -745,7 +745,7 @@ The console UI organizes control surfaces into four tabs: **Fleet**, **Queue**, 
 - **Fleet tab** — Shows agent fleet status (agent names, states, current task, elapsed time, recent tool use)
 - **Queue tab** — Shows pending tasks awaiting approval (the approval section from earlier sections)
 - **Pipeline tab** — Shows all ledger tasks grouped by status (In progress / Blocked / Open / Done), with domain filter chips and a spec panel that opens on card click (T13)
-- **Cost tab** — Shows aggregated token usage and cost across all agents. Data comes from `GET /api/cost`, which reads each agent's `live-events.jsonl` and sums `tokens_in`, `tokens_out`, and `cost_usd`. Results are cached per workspace for 30 seconds; `?since=ISO` returns a filtered, always-fresh response (T19).
+- **Cost tab** — Shows a per-agent cost breakdown table (Agent / Tokens In / Tokens Out / Cost (USD)) with a bold Total footer row and a "Last updated: Xs ago" line. Data comes from `GET /api/cost`, fetched on first tab activation and after `fleet-update` SSE events (debounced 30s). `cost_usd` is formatted to 4 decimal places; tokens use thousands separators (T19 + T20).
 
 ### Implementation
 
@@ -1594,6 +1594,98 @@ Parameters:
 | AC4 | `describe("GET /api/cost malformed cost fields skipped (AC4)")` — same fixture as AC1; asserts HTTP 200 and agent-a `cost_usd` = 0.003 (2 invalid lines did not contribute) | done_check |
 | AC5 | `describe("GET /api/cost ?since= filter (AC5)")` — 2 tests: `since=2026-01-01T11:30:00Z` → agents empty (no valid cost event at or after that time); `since=2026-01-01T10:30:00Z` → agent-a row with tokens_in 200, cost_usd 0.002 (only the 11:00 event qualifies) | done_check |
 | AC6 | `describe("GET /api/cost no cost data returns empty agents (AC6)")` — agent-b-only fixture (no cost_usd fields); asserts agents.length = 0, total.cost_usd = 0, cachedAt is string | done_check |
+
+---
+
+## Cost tab UI (T20)
+
+T20 replaces the Cost tab placeholder with a live-updating cost breakdown table. `fetchCost()` calls `GET /api/cost` (T19) on first tab activation and after each `fleet-update` SSE event when the Cost tab is active, throttled to at most one call per 30 seconds (matching the server cache TTL).
+
+### HTML structure (AC1)
+
+The static `.cost-placeholder` div is replaced with:
+
+```html
+<table class="cost-table" id="cost-table">
+  <thead>
+    <tr>
+      <th>Agent</th>
+      <th class="cost-num">Tokens In</th>
+      <th class="cost-num">Tokens Out</th>
+      <th class="cost-num">Cost (USD)</th>
+    </tr>
+  </thead>
+  <tbody id="cost-tbody"></tbody>
+  <tfoot id="cost-tfoot"></tfoot>
+</table>
+<p id="cost-last-updated" class="cost-last-updated"></p>
+```
+
+### JavaScript state and functions (AC3/AC4/AC5)
+
+| Name | Description |
+|---|---|
+| `COST_URL` | `'/api/cost'` constant |
+| `lastCostFetch` | Module-level timestamp; `0` on load; updated to `Date.now()` on each fetch |
+| `costBootstrapped` | Boolean; prevents re-fetch on repeated Cost tab clicks after first activation |
+| `fetchCost()` | Sets `lastCostFetch`, calls `GET /api/cost`, passes parsed JSON to `renderCost()` |
+| `renderCost(data)` | Renders tbody rows, tfoot Total row, and "Last updated" paragraph; clears all on empty state |
+
+`switchTab('cost')` is extended: if `!costBootstrapped`, sets `costBootstrapped = true` and calls `fetchCost()` immediately (AC3).
+
+The `fleet-update` SSE handler is extended at its end: if `currentTab === 'cost'` AND `Date.now() - lastCostFetch >= 30000`, calls `fetchCost()` (AC4).
+
+### Number formatting (AC2)
+
+```js
+const fmtCost   = new Intl.NumberFormat('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+const fmtTokens = new Intl.NumberFormat('en-US');
+```
+
+Cost cells render as `$0.0042`; token cells use thousands separators (`1,234,567`). Both formatters are constructed inside `renderCost()` on each call.
+
+### Empty state (AC6)
+
+When `data.agents` is absent or empty, `renderCost` writes a single spanning row and clears the Total footer:
+
+```html
+<tr><td colspan="4" class="cost-empty">No cost data yet — agents emit cost events as they run.</td></tr>
+```
+
+`lastUpdatedEl.textContent` is also cleared.
+
+### "Last updated" line (AC5)
+
+When `data.cachedAt` is present, `renderCost` computes elapsed seconds and sets:
+
+```
+Last updated: 12s ago
+```
+
+### CSS classes (styles.css)
+
+| Class | Purpose |
+|---|---|
+| `.cost-table` | Full-width table, `border-collapse: collapse` |
+| `.cost-table th` | Mono 10px, uppercase, letter-spacing 0.08em, dimmed color |
+| `.cost-table td` | Mono 12px, `var(--space-3)` padding, bottom border |
+| `.cost-table tbody tr:hover td` | Surface background on hover |
+| `.cost-table tfoot td` | Top border, no bottom border |
+| `.cost-empty` | Centered dim text for empty-state colspan row |
+| `.cost-updated` | Mono 11px dim (note: HTML element uses class `cost-last-updated`) |
+| `.cost-num` / `.cost-num-col` | Right-aligned numeric columns |
+
+### AC → verification mapping (T20)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `qa-smoke.sh` — `index.html` contains `id="cost-table"` and `id="cost-tbody"` | e2e_check |
+| AC2 | PR review — inject known cost value; confirm `$0.0042` format | human-verify |
+| AC3 | PR review — activate Cost tab; confirm `GET /api/cost` fires once | human-verify |
+| AC4 | PR review — while on Cost tab, emit `fleet-update` SSE; confirm refresh fires | human-verify |
+| AC5 | PR review — confirm "Last updated: Xs ago" element present | human-verify |
+| AC6 | `qa-smoke.sh` — `GET /api/cost` returns 200 with `"agents"` key | e2e_check |
+| AC7 | Covered by AC1 | e2e_check |
 
 ---
 
@@ -2474,8 +2566,12 @@ The script:
 20. Asserts `index.html` contains a `workspace-pill` element (T18 AC1)
 21. Asserts `GET /api/workspaces` returns HTTP 200 (T17 AC1)
 22. Asserts the workspaces JSON response contains a `"workspaces"` key (T17 AC1)
+23. Asserts `index.html` contains an element with `id="cost-table"` (T20 AC1/AC7)
+24. Asserts `index.html` contains an element with `id="cost-tbody"` (T20 AC1/AC7)
+25. Asserts `GET /api/cost` returns HTTP 200 (T20 AC6)
+26. Asserts the cost JSON response contains an `"agents"` key (T20 AC6)
 
-Items 16–18 use a `check_json` helper that calls `curl -D -` to capture response headers inline and checks both HTTP status and `Content-Type: application/json`. Items 18–21 require `CONTROL_DIR` to be set so `validAgents` is populated — the script creates a temporary `CONTROL_DIR` with a single-line `fleet.conf` listing `smoke-test-agent`, and writes a mock PID file at `supervisor/pids/smoke-test-agent.pid` containing `99999`. Both are cleaned up by the `EXIT` trap.
+Items 16–18 use a `check_json` helper that calls `curl -D -` to capture response headers inline and checks both HTTP status and `Content-Type: application/json`. Items 18–21 require `CONTROL_DIR` to be set so `validAgents` is populated — the script creates a temporary `CONTROL_DIR` with a single-line `fleet.conf` listing `smoke-test-agent`, and writes a mock PID file at `supervisor/pids/smoke-test-agent.pid` containing `99999`. Both are cleaned up by the `EXIT` trap. Items 25–26 call `GET /api/cost` directly with `curl`; no CONTROL_DIR is required (the endpoint reads JSONL from the home directory and returns an empty agents array when no data exists).
 
 ### Error handling
 
