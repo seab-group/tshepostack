@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Dark mode — Tailwind v4 `.dark` variant + system preference sync (T36)
+
+Fleet Console v2 ships with a complete dark mode implementation. Light colours become the default; the slate-900 dark palette activates when the `dark` class appears on `<html>`. The toggle button in the app header switches modes and saves the preference to `localStorage`. On first load, an inline script applies the correct class before React hydrates — no flash of the wrong colour scheme. When the preference is set to `system` (the default), the app tracks OS dark-mode changes live via `matchMedia`.
+
+#### Added
+- `src/styles/tokens.css` refactored: light colours are the `@theme` defaults (`#ffffff`/`#f8fafc`/`#0f172a` text); `.dark {}` block overrides to slate-900 palette (`#0f172a` bg, `#1e293b` surface) (T36 AC1).
+- Inline `<script>` in `index.html` applies `dark` class to `<html>` synchronously before hydration — prevents flash of wrong colour scheme (T36 AC3/AC4).
+- `src/lib/theme.ts` — `Theme` type, `THEME_KEY` constant, and four utilities: `getStoredTheme`, `isDarkPreferred`, `applyTheme`, `persistTheme` (T36 AC2–AC5).
+- `src/hooks/useTheme.ts` — `useTheme()` hook with live `matchMedia` system-preference listener; `toggle()` switches between explicit light and dark (T36 AC2/AC4/AC5).
+- `src/components/ThemeToggle.tsx` — ghost Button with `<Sun />`/`<Moon />` icon from lucide-react in the App header (T36 AC2).
+- `StatusRing` in `App.tsx` uses `ring-current` + `text-amber-500 dark:text-amber-400` so the pulse animation colour adapts in dark mode via `currentColor` (T36 AC6).
+- `src/theme.test.tsx` — 9 Vitest tests covering AC2–AC5: system pref, explicit override, toggle, and live matchMedia change (T36 AC7).
+- `test-setup.ts` gains `localStorage` and `matchMedia` stubs for dark-mode test isolation (T36 AC2–AC5).
+
 ### Fleet Console v2 — Phase A scaffold: Vite 6 + React 19 + Tailwind v4 + shadcn/ui (T24)
 
 The console is getting a complete React 19 rewrite. Phase A scaffolds `supervisor/console-v2/` as a standalone Bun workspace alongside the untouched v1.1 console — both directories coexist and share nothing. The new workspace ships with Vite 6, TypeScript, Tailwind v4 (CSS-first `@import`, no config file), shadcn/ui with the slate colour scheme and CSS variables, TanStack Query v5 wrapping the app entry point, and Framer Motion v11 animating the "coming soon" placeholder. Design tokens from `console/styles.css` are ported to a `@theme` block in `tokens.css` and extended with motion easing values. A Vitest renders-without-crashing test confirms the full stack wires together under `bun test supervisor/console-v2/`. Feature code and server integration follow in Phase B (T25).
