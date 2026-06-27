@@ -284,6 +284,29 @@ export function makeLedgerWatchHandler(
   };
 }
 
+// T22 AC8: decisions watcher — broadcasts approval SSE for new request files.
+// Skips broadcast when auto:true (trust-auto-resolved, no human needed).
+export function makeDecisionsWatchHandler(
+  decisionsDir: string,
+  broadcastFn: (frame: string) => void,
+): (_event: string, filename: string | null) => void {
+  return (_event, filename) => {
+    if (!filename || !filename.endsWith(".json")) return;
+    const filePath = join(decisionsDir, filename);
+    let parsedFile: Record<string, unknown>;
+    try {
+      parsedFile = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    // AC8: skip approval broadcast when auto:true (trust-resolved, no human intervention needed)
+    if (parsedFile.auto === true) return;
+    // Only broadcast for request files, not .decision.json responses
+    if (filename.endsWith(".decision.json")) return;
+    broadcastFn(`event: approval\ndata: ${JSON.stringify(parsedFile)}\n\n`);
+  };
+}
+
 export type GitSpawnResult = { code: number; out: string; err: string };
 export type GitSpawner = (args: string[]) => Promise<GitSpawnResult>;
 
@@ -626,6 +649,37 @@ export function bootstrapWorkspace(controlDir: string, workspacesPath: string): 
   reg.workspaces.push(ws);
   if (!reg.activeId) reg.activeId = ws.id;
   writeWorkspaceRegistry(workspacesPath, reg);
+}
+
+// T21: Trust ledger
+
+export interface TrustRule {
+  id: string;
+  agent: string;
+  pattern: string;
+  action: "approve" | "reject";
+  createdAt: string;
+}
+
+export interface TrustLedger {
+  rules: TrustRule[];
+}
+
+export function defaultTrustPath(): string {
+  return join(homedir(), ".gstack-console", "trust.json");
+}
+
+export function readTrustLedger(filePath: string): TrustLedger {
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8")) as TrustLedger;
+  } catch {
+    return { rules: [] };
+  }
+}
+
+export function writeTrustLedger(filePath: string, ledger: TrustLedger): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, JSON.stringify(ledger, null, 2));
 }
 
 // T19: Cost tracker

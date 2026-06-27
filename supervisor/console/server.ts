@@ -24,6 +24,7 @@ import {
   resolveControlDir,
   makeWatchHandler,
   makeLedgerWatchHandler,
+  makeDecisionsWatchHandler,
   gitCommitAndPush,
   resolvePort,
   readApprovals,
@@ -686,4 +687,11 @@ if (controlDir) {
   const ledgerDir = join(controlDir, "ledger");
   watch(ledgerDir, makeLedgerWatchHandler(ledgerDir, broadcast));
   console.log(`Watching ledger: ${ledgerDir}`);
+}
+
+// T22 AC8: decisions watcher — broadcasts approval SSE for new request files; skips auto-resolved.
+const decisionsWatchDir = process.env.SUPERVISOR_DECISIONS_DIR;
+if (decisionsWatchDir) {
+  mkdirSync(decisionsWatchDir, { recursive: true });
+  watch(decisionsWatchDir, makeDecisionsWatchHandler(decisionsWatchDir, broadcast));
 }

@@ -104,10 +104,20 @@ except Exception:
     pass
 " "$TRUST_FILE" "$AGENT" "$CMD" 2>/dev/null || echo "")
   if [ "$TRUST_RESULT" = "approve" ]; then
-    echo "[bash-wrapper] trust rule matched — auto-approving" >&2
+    echo "[trust] auto-approved: $CMD" >&2
+    if [ -n "${SUPERVISOR_DECISIONS_DIR:-}" ]; then
+      mkdir -p "$SUPERVISOR_DECISIONS_DIR"
+      python3 -c "import json,sys; json.dump({'approved':True,'auto':True},open(sys.argv[1],'w'))" \
+        "$SUPERVISOR_DECISIONS_DIR/${AGENT}-${REQUEST_ID}.decision.json" 2>/dev/null || true
+    fi
     exec "$REAL_BASH" "$@"
   elif [ "$TRUST_RESULT" = "reject" ]; then
-    echo "[bash-wrapper] trust rule matched — auto-rejecting" >&2
+    echo "[trust] auto-rejected: $CMD" >&2
+    if [ -n "${SUPERVISOR_DECISIONS_DIR:-}" ]; then
+      mkdir -p "$SUPERVISOR_DECISIONS_DIR"
+      python3 -c "import json,sys; json.dump({'approved':False,'auto':True},open(sys.argv[1],'w'))" \
+        "$SUPERVISOR_DECISIONS_DIR/${AGENT}-${REQUEST_ID}.decision.json" 2>/dev/null || true
+    fi
     exit 1
   fi
 fi

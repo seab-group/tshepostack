@@ -308,5 +308,122 @@ else
 fi
 
 echo ""
+echo "=== T22: Trust auto-decision file (AC6/AC7) ==="
+
+# AC6: approve rule → writes { approved: true, auto: true } decision file, no request file,
+#      stderr contains [trust] auto-approved:.
+cat > "$TRUST_FILE" <<'EOF'
+{
+  "rules": [
+    { "id": "r-t22a", "agent": "test_agent", "pattern": "git push", "action": "approve", "createdAt": "2026-01-01T00:00:00Z" }
+  ]
+}
+EOF
+
+DECDIR_T22A="$WORK/decisions_t22a"
+mkdir -p "$DECDIR_T22A"
+STDERR_T22A="$WORK/t22a_stderr.txt"
+_wrap_run \
+  PATH="$MOCKBIN:$_SAFE_PATH" \
+  SUPERVISOR_DECISIONS_DIR="$DECDIR_T22A" \
+  AGENT_NAME=test_agent \
+  /bin/bash "$WRAPPER" -c 'git push origin main' 2>"$STDERR_T22A"
+C_T22A=$?
+REQ_COUNT_T22A=$(ls "$DECDIR_T22A"/*.json 2>/dev/null | grep -v '\.decision\.json' | wc -l | tr -d ' ')
+DEC_COUNT_T22A=$(ls "$DECDIR_T22A"/*.decision.json 2>/dev/null | wc -l | tr -d ' ')
+STDERR_MSG_T22A=$(cat "$STDERR_T22A" 2>/dev/null)
+
+if [ "$C_T22A" -eq 0 ] && [ "$REQ_COUNT_T22A" -eq 0 ]; then
+  _ok "AC6: approve → exit 0, no request file"
+else
+  _fail "AC6: approve → exit $C_T22A, request files=$REQ_COUNT_T22A"
+fi
+
+if [ "$DEC_COUNT_T22A" -ge 1 ]; then
+  _ok "AC6: decision file written"
+else
+  _fail "AC6: no decision file written (count=$DEC_COUNT_T22A)"
+fi
+
+if echo "$STDERR_MSG_T22A" | grep -q '\[trust\] auto-approved:'; then
+  _ok "AC6: stderr contains [trust] auto-approved:"
+else
+  _fail "AC6: stderr missing [trust] auto-approved: (got: $STDERR_MSG_T22A)"
+fi
+
+DEC_FILE_T22A=$(ls "$DECDIR_T22A"/*.decision.json 2>/dev/null | head -1)
+if [ -n "$DEC_FILE_T22A" ]; then
+  AUTO_T22A=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('auto',''))" "$DEC_FILE_T22A" 2>/dev/null || echo "")
+  APPR_T22A=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('approved',''))" "$DEC_FILE_T22A" 2>/dev/null || echo "")
+  if [ "$AUTO_T22A" = "True" ] && [ "$APPR_T22A" = "True" ]; then
+    _ok "AC6: decision file has { approved: true, auto: true }"
+  else
+    _fail "AC6: decision file has auto=$AUTO_T22A approved=$APPR_T22A"
+  fi
+else
+  _fail "AC6: no decision file to verify"
+fi
+
+# AC7: reject rule → exit 1, no request file, decision file with approved:false auto:true,
+#      stderr contains [trust] auto-rejected:.
+cat > "$TRUST_FILE" <<'EOF'
+{
+  "rules": [
+    { "id": "r-t22b", "agent": "test_agent", "pattern": "git push", "action": "reject", "createdAt": "2026-01-01T00:00:00Z" }
+  ]
+}
+EOF
+
+DECDIR_T22B="$WORK/decisions_t22b"
+mkdir -p "$DECDIR_T22B"
+STDERR_T22B="$WORK/t22b_stderr.txt"
+_wrap_run \
+  SUPERVISOR_DECISIONS_DIR="$DECDIR_T22B" \
+  AGENT_NAME=test_agent \
+  /bin/bash "$WRAPPER" -c 'git push origin main' 2>"$STDERR_T22B"
+C_T22B=$?
+REQ_COUNT_T22B=$(ls "$DECDIR_T22B"/*.json 2>/dev/null | grep -v '\.decision\.json' | wc -l | tr -d ' ')
+DEC_COUNT_T22B=$(ls "$DECDIR_T22B"/*.decision.json 2>/dev/null | wc -l | tr -d ' ')
+STDERR_MSG_T22B=$(cat "$STDERR_T22B" 2>/dev/null)
+
+if [ "$C_T22B" -eq 1 ] && [ "$REQ_COUNT_T22B" -eq 0 ]; then
+  _ok "AC7: reject → exit 1, no request file"
+else
+  _fail "AC7: reject → exit $C_T22B, request files=$REQ_COUNT_T22B"
+fi
+
+if [ "$DEC_COUNT_T22B" -ge 1 ]; then
+  _ok "AC7: decision file written"
+else
+  _fail "AC7: no decision file written (count=$DEC_COUNT_T22B)"
+fi
+
+if echo "$STDERR_MSG_T22B" | grep -q '\[trust\] auto-rejected:'; then
+  _ok "AC7: stderr contains [trust] auto-rejected:"
+else
+  _fail "AC7: stderr missing [trust] auto-rejected: (got: $STDERR_MSG_T22B)"
+fi
+
+DEC_FILE_T22B=$(ls "$DECDIR_T22B"/*.decision.json 2>/dev/null | head -1)
+if [ -n "$DEC_FILE_T22B" ]; then
+  AUTO_T22B=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('auto',''))" "$DEC_FILE_T22B" 2>/dev/null || echo "")
+  APPR_T22B=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('approved',''))" "$DEC_FILE_T22B" 2>/dev/null || echo "")
+  if [ "$AUTO_T22B" = "True" ] && [ "$APPR_T22B" = "False" ]; then
+    _ok "AC7: decision file has { approved: false, auto: true }"
+  else
+    _fail "AC7: decision file has auto=$AUTO_T22B approved=$APPR_T22B"
+  fi
+else
+  _fail "AC7: no decision file to verify"
+fi
+
+# Restore trust file if it was backed up.
+if [ -f "$TRUST_BACKUP" ]; then
+  cp "$TRUST_BACKUP" "$TRUST_FILE"
+else
+  rm -f "$TRUST_FILE"
+fi
+
+echo ""
 printf '=== Results: %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

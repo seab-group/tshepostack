@@ -128,5 +128,35 @@ else
   printf '  FAIL  POST /api/fleet/stop mock stale PID → %s\n' "${STOP_RESP}" >&2; fail=$((fail + 1))
 fi
 
+# T22 AC1: Trust section — POST a rule, GET /api/trust returns it, index.html has trust-rules element.
+TRUST_RESP=$(curl -s --max-time 5 -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"agent":"smoke-test-agent","pattern":"git push","action":"approve"}' \
+  "${B}/api/trust" 2>/dev/null) || TRUST_RESP=""
+if printf '%s' "${TRUST_RESP}" | grep -q '"rule"'; then
+  printf '  ok    POST /api/trust → rule returned\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  POST /api/trust → %s\n' "${TRUST_RESP}" >&2; fail=$((fail + 1))
+fi
+
+TRUST_LIST=$(curl -sf --max-time 5 "${B}/api/trust" 2>/dev/null) || TRUST_LIST=""
+if printf '%s' "${TRUST_LIST}" | grep -q '"rules"'; then
+  printf '  ok    GET /api/trust returns rules array\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  GET /api/trust missing rules key: %s\n' "${TRUST_LIST}" >&2; fail=$((fail + 1))
+fi
+
+if printf '%s' "${INDEX_BODY}" | grep -q 'id="section-trust"'; then
+  printf '  ok    index.html contains section-trust element\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  index.html missing section-trust element\n' >&2; fail=$((fail + 1))
+fi
+
+if printf '%s' "${INDEX_BODY}" | grep -q 'id="trust-rules"'; then
+  printf '  ok    index.html contains trust-rules element\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  index.html missing trust-rules element\n' >&2; fail=$((fail + 1))
+fi
+
 printf '\n=== smoke: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [ "${fail}" -eq 0 ]
