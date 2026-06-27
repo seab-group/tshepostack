@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### v1.1 integration test suite — workspace, cost, trust, and cross-feature tests (T23)
+
+The v1.1 feature set (workspace registry, cost tracker, and trust ledger) now has full integration test coverage. Five new describe blocks in `server.test.ts` cover all AC1–AC5 scenarios — including bash wrapper subprocess tests for trust auto-approve and auto-reject, and two cross-feature tests that verify cache invalidation and agent validation across workspace switches. A pre-existing test failure (`capturedGitArgs` orphan in draft-decision AC1) is also fixed. The `qa-smoke.sh` gains three new AC6 assertions: registering a workspace via POST, listing workspaces, and fetching cost data.
+
+A companion `fix(T23)` commit restores 17 missing `server-utils.ts` symbols and one type import to `server.ts` that were dropped in the T22 merge — the omission caused a `ReferenceError` on startup that blocked `qa-smoke.sh` from running.
+
+#### Added
+- `describe("workspace registry")` — 5 tests at port 7875: GET empty on missing file, POST rejects relative `controlDir`, POST creates workspace with UUID id, DELETE shifts `activeId`, activate broadcasts `workspace-switch` SSE (T23 AC1).
+- `describe("cost tracker")` — 5 tests at port 7876: GET aggregated totals, cache-hit (compute runs once), cache-miss after workspace switch, `?since=` filter, malformed `cost_usd` silently skipped (T23 AC2).
+- `describe("trust ledger")` — 8 tests at port 7877: GET missing file, GET existing rules, POST validates agent, POST validates action, DELETE 204, DELETE 404, bash wrapper auto-approve exits 0, bash wrapper auto-reject exits 1 (T23 AC3).
+- `describe("cross-feature: workspace switch invalidates cost cache")` — 1 test: activating workspace 2 clears workspace 1's cost cache (T23 AC4).
+- `describe("cross-feature: workspace switch reloads validAgents")` — 1 test: agent valid in new workspace but not old returns 200 after `POST /api/workspaces/:id/activate` (T23 AC5).
+- `qa-smoke.sh` items 31–33: POST /api/workspaces (workspace registered), GET /api/workspaces (200), GET /api/cost (200) (T23 AC6).
+- 181 total tests (2 bash-wrapper + 179 server), up from 161.
+
+#### Fixed
+- `capturedGitArgs` orphan in `describe("POST /api/draft-decision")` `beforeEach` removed; the test that was failing due to a `ReferenceError` now passes.
+- 17 missing symbols restored to `server.ts` import block (`defaultWorkspacesPath`, `bootstrapWorkspace`, `readWorkspaceRegistry`, `writeWorkspaceRegistry`, `defaultTrustPath`, `readTrustLedger`, `writeTrustLedger`, `computeCostData`, `readAndValidatePostBody`, `readLogTail`, `makeRateLimiter`, `computeStuckSignals`, `purgeStaleDecisionFiles`, `stopProcess`, `readPidFile`, `defaultIsProcessAlive`, `defaultKillFn`) and one type import; duplicate `resolveControlDir` removed.
+
 ### Trust UI: fix DELETE path param + UUID validation (T22-amended)
 
 The Revoke button in the Trust rules UI was calling `DELETE /api/trust?id={id}` (query string), which the server never matched — trust rules could not be deleted from the console. The fix routes the delete through the correct `DELETE /api/trust/{id}` path parameter form. The server handler now extracts the id with `path.split('/').at(-1)` and validates it against `/^[a-f0-9-]{36}$/` before touching the trust ledger, returning 400 for malformed ids instead of 404. The Pause toggle button — present in T22 but backed by no server endpoint — is removed entirely from rule rows; rule pausing is deferred to v2.
