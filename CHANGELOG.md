@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Trust UI: fix DELETE path param + UUID validation (T22-amended)
+
+The Revoke button in the Trust rules UI was calling `DELETE /api/trust?id={id}` (query string), which the server never matched — trust rules could not be deleted from the console. The fix routes the delete through the correct `DELETE /api/trust/{id}` path parameter form. The server handler now extracts the id with `path.split('/').at(-1)` and validates it against `/^[a-f0-9-]{36}$/` before touching the trust ledger, returning 400 for malformed ids instead of 404. The Pause toggle button — present in T22 but backed by no server endpoint — is removed entirely from rule rows; rule pausing is deferred to v2.
+
+#### Fixed
+- Revoke button in `console.js` now calls `` fetch(`/api/trust/${encodeURIComponent(rule.id)}`, { method: 'DELETE' }) `` (path parameter form); the old `DELETE /api/trust?id=` query-string form always returned 404 (T22-amended AC1).
+- `DELETE /api/trust/:id` handler in `server.ts` extracts `ruleId` with `path.split('/').at(-1)` and validates it against `/^[a-f0-9-]{36}$/` — returns 400 `{ error: "bad request" }` for non-UUID ids (T22-amended AC2).
+- Server startup crash fixed: 18 missing `server-utils.ts` symbols (`defaultWorkspacesPath`, `bootstrapWorkspace`, `readWorkspaceRegistry`, `writeWorkspaceRegistry`, `defaultTrustPath`, `readTrustLedger`, `writeTrustLedger`, `computeCostData`, `readAndValidatePostBody`, `readLogTail`, `makeRateLimiter`, `computeStuckSignals`, `purgeStaleDecisionFiles`, `stopProcess`, `readPidFile`, `defaultIsProcessAlive`, `defaultKillFn`, and type imports `TrustRule`, `TrustLedger`, `CostResponse`, `Workspace`) restored; duplicate `resolveControlDir` entry removed from the import block.
+- No Pause/toggle button on trust rule rows; `TrustRule` type has no `active` or `paused` field (T22-amended AC4).
+
+#### Added
+- 2 new tests in `describe("DELETE /api/trust path param")` in `server.test.ts` — valid UUID in path → 204 + rule removed from file; malformed non-UUID id → 400 (T22-amended AC2).
+- Existing `describe("DELETE /api/trust/:id (AC3)")` fixture ids updated to UUID format — confirms UUID-format ids are accepted end-to-end (T22-amended AC3/AC5).
+- 163 total tests (2 bash-wrapper + 161 server).
+
 ### Trust rules UI + bash wrapper auto-decision (T22)
 
 The console Queue tab now has a Trust rules section at the bottom. Operators can add permanent approve/reject rules for each agent-and-pattern pair — the bash wrapper resolves matching commands immediately without showing a request card or waiting for human input. Revoked rules are faded out in 300ms and deleted from the ledger. The "Add rule" inline form populates its agent dropdown from the live fleet list, so it stays correct across workspace switches.
@@ -18,7 +33,7 @@ On the server side, a new decisions directory watcher broadcasts the `approval` 
 - 5 new tests in `describe("makeDecisionsWatchHandler (AC8)")` in `server.test.ts` — auto:true decision file skipped, human .decision.json skipped, request .json broadcasts, non-.json skipped, unreadable .json skipped (T22 AC8).
 - T22 AC6/AC7 bash wrapper tests in `bash-wrapper.test.sh` — approve rule: exit 0, no request file, decision file `{approved:True,auto:True}`, stderr `[trust] auto-approved:`; reject rule: exit 1, no request file, decision file `{approved:False,auto:True}`, stderr `[trust] auto-rejected:`.
 - 4 new assertions in `qa-smoke.sh` — POST /api/trust returns `rule` key; GET /api/trust returns `rules` key; `index.html` contains `id="section-trust"` and `id="trust-rules"` — bringing the total to 30 checks (T22 AC1).
-- 161 total tests (2 bash-wrapper + 159 server).
+- 159 server tests added in T22; total reaches 163 with T22-amended (2 new path param tests).
 
 #### Fixed
 - T19 cost test server port moved from 7890 to 7899 to avoid collision with T21 trust ledger tests on port 7890.
