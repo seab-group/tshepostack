@@ -42,12 +42,14 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console-v2/src/shortcuts.test.tsx` | 13 Vitest tests for keyboard shortcuts (T37) — `ShortcutsHost` renders `useShortcuts()` with no UI; `fire(opts)` dispatches `new KeyboardEvent('keydown', ...)` to `window`; `beforeEach` resets store state; `afterEach` calls `cleanup()`; tests: AC1 (Ctrl+K → `paletteOpen=true`; Ctrl+1–5 → correct `activeTab`; Escape → `paletteOpen=false`); AC3 (Ctrl+? → `helpOpen=true`; Ctrl+? again → `helpOpen=false`; Escape with `helpOpen=true` → `helpOpen=false`); AC2 (Ctrl+K suppressed when target is `INPUT`, `TEXTAREA`, or `SELECT` — uses `Object.defineProperty(evt, 'target', ...)` to spoof the event target since `KeyboardEvent.target` is read-only) (T37 AC1/AC2/AC3/AC5) |
 | `console-v2/src/hooks/useFleetStream.ts` | SSE singleton hook (T26) — `FleetEvent` type union (`fleet-update \| approval \| stuck`); module-level singleton state: `_sse: EventSource \| null`, `_refCount: number`, `_backoffMs: number`, `_reconnectTimer`, `_queryClient: QueryClient \| null`, `_EventSourceClass: typeof EventSource \| null`, `_listeners: Set<Listener>`; `_notify(connected, event?)` broadcasts to all listeners; `_connect()` creates `new _EventSourceClass('/api/events')`, wires `onopen` (resets `_backoffMs` to 1000, notifies connected), `onerror` (closes + schedules reconnect via `setTimeout(_backoffMs)` then doubles up to 30s max), and three named event listeners: `fleet-update` → `_queryClient.setQueryData(['fleet', payload.agent], payload)`; `approval` → `_queryClient.invalidateQueries({ queryKey: ['queue'] })`; `stuck` → `_queryClient.setQueryData(['stuck', payload.agent], payload)`; `useFleetStream(EventSourceClass = window.EventSource)` hook: increments `_refCount`, registers a `Listener` that calls `setConnected`/`setLastEvent`, starts connection if `_sse` is null (singleton guarantee); cleanup decrements `_refCount`, deletes listener, and on last consumer: cancels reconnect timer, closes `_sse`, resets all module-level state; `backoffRef = useRef(_backoffMs)` tracks current backoff without triggering re-renders; returns `{ connected: boolean, lastEvent: FleetEvent \| null }` (T26 AC1–AC7) |
 | `console-v2/src/hooks/useFleetStream.test.tsx` | 10 Vitest tests for `useFleetStream` (T26) — `MockEventSource` class with `instances[]` registry, `emit(type, data)` helper, `triggerOpen()`, `triggerError()`, `close()`; `makeWrapper(qc)` wraps `QueryClientProvider`; `afterEach` calls `MockEventSource.reset()` and `jest.useRealTimers()`; `describe('useFleetStream')`: AC1 (2 tests: EventSource opens on mount/closes on unmount at `readyState=2`; `connected=false` initially → `true` after `triggerOpen`); AC2 (2 tests: exponential backoff — 1s→2s→4s disconnect intervals asserted via `jest.useFakeTimers` + `advanceTimersByTime`; backoff resets to 1s after `triggerOpen`); AC3 (2 tests: `fleet-update` → `setQueryData(['fleet', agent], payload)` via `spyOn(qc, 'setQueryData')`; `lastEvent` updated to `{ type: 'fleet-update', agent }` shape); AC4 (1 test: `approval` → `invalidateQueries({ queryKey: ['queue'] })` via `spyOn(qc, 'invalidateQueries').mockImplementation`); AC5 (1 test: `stuck` → `setQueryData(['stuck', payload.agent], payload)`); AC6 (2 tests: two hook instances share one `MockEventSource` — `instances.length === 1`; unmounting first does NOT close; unmounting last sets `readyState=2`; second consumer mounts after `triggerOpen` and gets `connected=true` immediately with still only 1 instance) (T26 AC1–AC7) |
-| `console-v2/src/types/fleet.ts` | `AgentStatusValue` type (`'active' \| 'paused' \| 'stuck' \| 'stopped'`) and `AgentInfo` interface — `name: string`, `task: string \| null`, `tool: string \| null`, `summary: string \| null`, `status: AgentStatusValue`, `since: string \| null`; shared across `FleetView`, `AgentCard`, and `FleetView.test.tsx` (T27) |
+| `console-v2/src/types/fleet.ts` | `AgentStatusValue` type (`'active' \| 'paused' \| 'stuck' \| 'stopped'`) and `AgentInfo` interface — `name: string`, `task: string \| null`, `tool: string \| null`, `summary: string \| null`, `status: AgentStatusValue`, `since: string \| null`; shared across `FleetView`, `AgentCard`, and `FleetView.test.tsx` (T27); T28: `LogEvent` interface added — `ts: string`, `tool?: string`, `summary: string`, `file?: string`; shared by `AgentLogDrawer.tsx` and `AgentLogDrawer.test.tsx` (T28 AC2) |
 | `console-v2/src/context/DrawerContext.tsx` | `DrawerProvider` and `useDrawer()` — shared drawer state (`open: boolean`, `agentName: string \| null`); `openDrawer(name)` sets both, `closeDrawer()` resets both; `useDrawer()` throws if called outside `<DrawerProvider>`; designed for `<AgentLogDrawer />` (T28) to wire into without prop-drilling (T27 AC5) |
 | `console-v2/src/components/FleetView.tsx` | `<FleetView agents={AgentInfo[]} />` — reads `queryClient.getQueryData(['stuck', agentName])` for each agent via `useQueryClient()`; renders a `<StuckAlert />` per stuck agent above the grid; CSS grid (`gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))'`, `gap: 16px`); wraps `<AgentCard key={agent.name} />` children in `<AnimatePresence>` so exit animations fire on card removal (T27 AC1/AC3/AC6) |
 | `console-v2/src/components/AgentCard.tsx` | `<AgentCard agent={AgentInfo} />` — subscribes to `useQuery({ queryKey: ['fleet', name], initialData: agent, staleTime: Infinity })` per card; `RING_COLORS` map: `active #16a34a`, `paused #d97706`, `stuck #dc2626`, `stopped #9ca3af`; `cardVariants` drives enter (`opacity 0→1, y 8→0`, 200ms) and exit (`opacity 0`, 150ms); `ringPulse` applies `scale: [1, 1.1, 1]` `repeat: Infinity` when `status === 'active'` only; inline SVG avatar with Dicebear initials pattern (`agent.name.slice(0,2).toUpperCase()`); elapsed time via `setInterval(10_000)` + `sinceRef` (avoids stale closure without adding `since` to effect deps); clicking calls `openDrawer(agent.name)` from `useDrawer()`; `data-ring-color` attribute on the ring `<motion.div>` enables assertion in tests (T27 AC2/AC3/AC4/AC5) |
 | `console-v2/src/components/StuckAlert.tsx` | `<StuckAlert agentName message? />` — `role="alert"` div; `data-testid="stuck-alert"` for test selection; red border (`#dc2626`, 1px solid); background `rgba(220,38,38,0.1)`; inline SVG warning icon (circle + exclamation rect); renders agent name in bold red and optional `message` string in `--color-text-dim`; styled with CSS custom properties for dark-mode compatibility (T27 AC6) |
 | `console-v2/src/components/FleetView.test.tsx` | 6 Vitest tests in `describe('FleetView')` — `AGENTS` fixture: 3 agents (active/paused/stuck); `Wrap` helper wraps `QueryClientProvider` + `DrawerProvider`; inline `requestAnimationFrame`/`cancelAnimationFrame` stubs (Framer Motion requires them in jsdom — injected per-file rather than via `test-setup.ts` to keep the stub scoped); `beforeEach` creates a fresh `QueryClient`; `afterEach` calls `cleanup()`, `qc.clear()`, `jest.useRealTimers()`; AC1: `data-testid="fleet-grid"` present + 3 `data-testid="agent-card"` elements; AC2: all 3 names in `[data-testid="agent-name"]` + elapsed text non-null; AC3: stuck card's `[data-ring-color]` equals `#dc2626`; AC6×2: `StuckAlert` renders (count=1) when `['stuck', 'agent-qa']` data is set, absent (count=0) otherwise; AC7: `jest.advanceTimersByTime(10_001)` inside `act` changes elapsed text (T27 AC1–AC3/AC6/AC7) |
+| `console-v2/src/components/AgentLogDrawer.tsx` | `<AgentLogDrawer agent={string} onClose={fn} EventSourceClass? />` — fixed-position right panel 480px wide, full height, `z-index: 50` above the fleet grid; Framer Motion `motion.div` with `initial={{ x: 480 }} animate={{ x: 0 }} exit={{ x: 480 }}`, 250ms spring (AC1); `useQuery({ queryKey: ['log', agent], staleTime: Infinity, refetchOnWindowFocus: false, refetchOnMount: false, refetchInterval: false })` fetches `GET /api/log/{name}?n=50` and populates event list (AC2); `useFleetStream` provides `lastEvent`; `useEffect` on `lastEvent` appends `fleet-update` events for the open agent via `queryClient.setQueryData(['log', agent], …)` without refetch (AC3); auto-scroll `useEffect` on `events.length`: calls `el.scrollTop = el.scrollHeight` when `isNearBottom(el)` (`scrollTop + clientHeight >= scrollHeight - 100`) (AC3); "Restart agent" button sets `restartConfirm` state — `AnimatePresence`-animated inline confirm modal with "Restart" (red) and "Cancel" buttons; "Restart" fires `POST /api/fleet/restart?agent={name}` (AC4); "Copy log" button calls `navigator.clipboard.writeText` with `events.map(…).join('\n')` — `formatTs(ev.ts)` renders `HH:MM:SS`; `copied` state shows "Copied!" tooltip via `AnimatePresence` for 2 s then resets (AC5); Escape `keydown` listener on `window` → `onClose()`; backdrop `div` (`data-testid="drawer-backdrop"`, `rgba(0,0,0,0.20)`, `z-index: 40`) `onClick={onClose}`; `×` button in header `onClick={onClose}` (AC6); event rows: timestamp in `monospace 11px`, optional tool badge (blue tint, uppercase, `data-testid="log-tool"`), summary (truncated single-line), optional file path below in muted monospace (T28 AC1–AC6) |
+| `console-v2/src/components/AgentLogDrawer.test.tsx` | 7 Vitest tests in `describe('AgentLogDrawer')` (T28 AC2/AC3/AC5/AC6) — per-file `requestAnimationFrame`/`cancelAnimationFrame` stubs; `navigator.clipboard.writeText` stub via `jest.fn().mockResolvedValue(undefined)`; `MockEventSource` class with `url`, `handlers` map, `addEventListener`, `emit(type, data)`, `close()`, and static `_last` pointer; `EVENTS` fixture: 3 `LogEvent` entries (2 with `tool`/`file`, 1 summary-only); `Wrap(qc)` wraps `QueryClientProvider + AnimatePresence`; `beforeEach` creates fresh `QueryClient`; `afterEach` calls `cleanup()` + `qc.clear()`; `renderDrawer(agentName, preloadEvents?)` pre-seeds cache via `qc.setQueryData` before render; tests: AC2 — 3 `log-event` elements; first has `log-ts=10:00:01`, `log-tool=Read`, `log-summary=reading spec`, `log-file=tasks/T28.md`; third has no `log-tool` or `log-file`; AC3 (same-agent) — emit `fleet-update` for open agent → cache grows to 4 events, `events[3].tool === 'Write'`; AC3 (cross-agent) — emit `fleet-update` for different agent → cache stays at 3; AC6×3 — Escape `keyDown` on `window`, backdrop click, `×` click all call `closeFn` once; AC5 — `Copy log` click → `navigator.clipboard.writeText` called with text containing "reading spec", "running tests", "Read" (T28 AC2/AC3/AC5/AC6) |
 
 ---
 
@@ -3142,12 +3144,14 @@ supervisor/console-v2/
 │   ├── hooks/useFleetStream.test.tsx # 10 tests: mount/unmount, backoff, fleet-update/approval/stuck, singleton (T26)
 │   ├── store/shortcutStore.ts      # Zustand ShortcutStore: paletteOpen, activeTab, helpOpen + actions (T37)
 │   ├── context/DrawerContext.tsx   # DrawerProvider + useDrawer(): open/agentName state for AgentLogDrawer (T27)
-│   ├── types/fleet.ts              # AgentInfo interface + AgentStatusValue type (T27)
+│   ├── types/fleet.ts              # AgentInfo interface + AgentStatusValue type (T27); LogEvent interface (T28)
 │   └── components/
 │       ├── FleetView.tsx           # CSS grid of AgentCards + StuckAlerts above + AnimatePresence (T27)
 │       ├── AgentCard.tsx           # per-agent TanStack Query subscriber; status ring; elapsed timer (T27)
 │       ├── StuckAlert.tsx          # red alert banner above the grid for stuck agents (T27)
 │       ├── FleetView.test.tsx      # 6 tests: grid render, ring colour, stuck alert, elapsed update (T27)
+│       ├── AgentLogDrawer.tsx      # slide-in 480px log panel; TanStack Query ['log',name]; SSE append; Escape/backdrop/× close (T28)
+│       ├── AgentLogDrawer.test.tsx # 7 tests: initial render, SSE append, cross-agent filter, close variants, clipboard (T28)
 │       ├── ThemeToggle.tsx         # ghost Button with Sun/Moon icon (T36)
 │       ├── ShortcutsDialog.tsx     # ⌘? help overlay: backdrop + dialog + 8-row kbd table (T37)
 │       └── ui/button.tsx           # shadcn Button: 6 variants, 4 sizes, React.forwardRef
@@ -3873,6 +3877,139 @@ The test file installs its own `requestAnimationFrame` / `cancelAnimationFrame` 
 | AC5 | PR review — click card; confirm `DrawerContext.open` becomes `true` (T28 drawer wires in next) | human-verify |
 | AC6 | `bun test supervisor/console-v2/` — `['stuck', 'agent-qa']` data set → `StuckAlert` renders; absent → no alert | done_check |
 | AC7 | `bun test supervisor/console-v2/` — `jest.advanceTimersByTime(10_001)` → elapsed text changes | done_check |
+
+---
+
+## AgentLogDrawer — slide-in log panel with real-time tail (T28)
+
+T28 wires the drawer context created in T27 to a real log viewer. When a director clicks an agent card in the Fleet tab, a right-side panel slides in showing the agent's last 50 events. New events arrive via the existing SSE stream and are appended to the list without a full refetch. The drawer provides restart and copy-log actions in its header.
+
+### `LogEvent` type — `src/types/fleet.ts`
+
+```typescript
+export interface LogEvent {
+  ts: string        // ISO timestamp
+  tool?: string     // optional tool name badge
+  summary: string   // main event text
+  file?: string     // optional file path shown below summary
+}
+```
+
+`LogEvent` is shared between `AgentLogDrawer.tsx` and `AgentLogDrawer.test.tsx`. It extends `src/types/fleet.ts` alongside the T27 `AgentInfo` interface.
+
+### Drawer layout and animation (AC1)
+
+`<AgentLogDrawer>` renders two root elements inside `<AnimatePresence>`:
+
+1. A backdrop `<div>` — `position: fixed; inset: 0; background: rgba(0,0,0,0.20); z-index: 40` — receives `onClick={onClose}`.
+2. A `<motion.div>` panel — `position: fixed; top: 0; right: 0; width: 480px; height: 100%; z-index: 50` — animates with `initial={{ x: 480 }} animate={{ x: 0 }} exit={{ x: 480 }}` using a 250 ms spring with `bounce: 0`.
+
+The backdrop is rendered before the panel in DOM order so z-index stacking is unambiguous. The panel has `role="dialog" aria-modal="true" aria-label={\`Log: ${agent}\`}`.
+
+### TanStack Query integration — `GET /api/log/:agent` (AC2)
+
+```typescript
+const { data } = useQuery<{ events: LogEvent[] }>({
+  queryKey: ['log', agent],
+  queryFn: async () => {
+    const res = await fetch(`/api/log/${encodeURIComponent(agent)}?n=50`)
+    if (!res.ok) throw new Error('fetch failed')
+    return res.json()
+  },
+  staleTime: Infinity,
+  refetchOnWindowFocus: false,
+  refetchOnMount: false,
+  refetchInterval: false,
+})
+```
+
+`staleTime: Infinity` means the query never goes stale automatically — data is kept fresh only through SSE-driven mutations (AC3). Background refetch is disabled on all axes to prevent races with the append logic.
+
+Events are displayed newest-at-bottom in a scrollable `<div ref={listRef}>`. Each row shows:
+- **Timestamp** — `HH:MM:SS` via `formatTs(ev.ts)`, `font-family: monospace; font-size: 11px` (muted)
+- **Tool badge** (optional) — uppercase, blue-tinted accent, 10px; absent for events without `ev.tool`
+- **Summary** — single-line truncated with `text-overflow: ellipsis`
+- **File path** (optional) — second line, muted monospace 11px
+
+### SSE append without refetch (AC3)
+
+`useFleetStream` provides `lastEvent`. A `useEffect` filters for `fleet-update` events where `payload.agent === agent`:
+
+```typescript
+useEffect(() => {
+  if (!lastEvent || lastEvent.type !== 'fleet-update') return
+  if ((lastEvent as { agent?: string }).agent !== agent) return
+
+  const newEvent: LogEvent = {
+    ts: payload.ts ?? new Date().toISOString(),
+    tool: payload.tool,
+    summary: payload.summary ?? '',
+    file: payload.file,
+  }
+
+  queryClient.setQueryData<{ events: LogEvent[] }>(['log', agent], (old) => ({
+    events: [...(old?.events ?? []), newEvent],
+  }))
+}, [lastEvent, agent, queryClient])
+```
+
+A second `useEffect` on `events.length` handles auto-scroll:
+
+```typescript
+useEffect(() => {
+  const el = listRef.current
+  if (!el) return
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 100) {
+    el.scrollTop = el.scrollHeight
+  }
+}, [events.length])
+```
+
+The 100px threshold lets a director scroll back in the log without being yanked to the bottom when new events arrive. The drawer only snaps to bottom when the scroll position is already within 100px of the end.
+
+### Header actions
+
+**Restart agent (AC4):** The "Restart agent" button sets `restartConfirm: boolean` state. `<AnimatePresence>` renders an inline confirm modal (`position: absolute; inset: 0; background: rgba(0,0,0,0.30); z-index: 10`) with "Restart" and "Cancel" buttons. "Restart" fires `POST /api/fleet/restart?agent={encodeURIComponent(agent)}` then dismisses the modal.
+
+**Copy log (AC5):** The "Copy log" button formats all visible events as `formatTs | tool | summary | file` (pipe-separated, `filter(Boolean)` skips absent fields) joined by `\n`, then calls `navigator.clipboard.writeText`. `copied: boolean` state triggers an `<AnimatePresence>`-animated "Copied!" tooltip (`position: absolute; bottom: 100%; translateX(-50%)`) that dismisses after 2 s via `setTimeout(() => setCopied(false), 2000)`.
+
+### Close behaviour (AC6)
+
+Three independent close paths, all calling `onClose()`:
+
+| Trigger | Mechanism |
+|---|---|
+| Escape key | `window.addEventListener('keydown', fn)` in `useEffect([], [onClose])`; cleaned up on unmount |
+| Backdrop click | `onClick={onClose}` on the backdrop `<div>` |
+| `×` button | `onClick={onClose}` on `data-testid="drawer-close-btn"` in the header |
+
+### Test coverage
+
+`src/components/AgentLogDrawer.test.tsx` — 7 tests in `describe('AgentLogDrawer')`:
+
+| Test | AC | Assertion |
+|---|---|---|
+| Renders initial log events from cache in list | AC2 | 3 `[data-testid="log-event"]` elements; first: `log-ts=10:00:01`, `log-tool=Read`, `log-summary`, `log-file`; third: no `log-tool`, no `log-file` |
+| fleet-update SSE for open agent is appended | AC3 | emit `fleet-update` for `agent-fe` → cache grows to 4; `events[3].tool === 'Write'` |
+| fleet-update for different agent is NOT appended | AC3 | emit `fleet-update` for `agent-be` → `agent-fe` cache stays at 3 |
+| Escape key calls onClose | AC6 | `fireEvent.keyDown(window, { key: 'Escape' })` → `closeFn` called once |
+| Backdrop click calls onClose | AC6 | `fireEvent.click(backdrop)` → `closeFn` called once |
+| × button click calls onClose | AC6 | `fireEvent.click(closeBtn)` → `closeFn` called once |
+| Copy log triggers clipboard.writeText with formatted text | AC5 | `fireEvent.click(copyBtn)` → `navigator.clipboard.writeText` called; written text contains "reading spec", "running tests", "Read" |
+
+The test file installs its own `requestAnimationFrame`/`cancelAnimationFrame` stubs and a `navigator.clipboard.writeText` stub. `MockEventSource` has a static `_last` pointer so tests can call `sse.emit(type, data)` after render. The `Wrap` component wraps `QueryClientProvider` + `AnimatePresence`. Cache is pre-seeded via `qc.setQueryData(['log', agentName], { events: EVENTS })` before render to bypass the async `queryFn`.
+
+### AC → verification mapping
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | PR review — click agent card; confirm drawer slides in from right at 480px; click again to close; confirm exit slide | human-verify |
+| AC2 | `bun test supervisor/console-v2/` — mock `GET /api/log`; assert timestamp/tool/summary/file rendered per event | done_check |
+| AC3 | `bun test supervisor/console-v2/` — emit `fleet-update` for open agent; assert event appended; emit for other agent; assert no change | done_check |
+| AC4 | PR review — click "Restart agent"; confirm inline modal; confirm; observe `POST /api/fleet/restart` in Network tab | human-verify |
+| AC5 | PR review — click "Copy log"; confirm "Copied!" tooltip; paste in editor and verify format | human-verify |
+| AC6 | `bun test supervisor/console-v2/` — Escape key, backdrop click, × click → `onClose` called once each | done_check |
+| AC7 | Covered by AC2, AC3, AC6 above | done_check |
 
 ---
 

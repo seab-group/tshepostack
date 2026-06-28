@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### AgentLogDrawer — slide-in log panel with real-time tail (T28)
+
+Clicking any agent card in Fleet Console v2 now opens a 480px drawer on the right side. The drawer loads the agent's last 50 log events from `GET /api/log/:agent` and appends new events live via the SSE stream, scrolling to the bottom automatically when you are already near the end. The header provides a "Copy log" button that formats all visible events to the clipboard, and a "Restart agent" button with an inline confirmation step. The drawer closes on Escape, backdrop click, or the × button.
+
+#### Added
+- `src/types/fleet.ts` — `LogEvent` interface (`ts`, `tool?`, `summary`, `file?`) added alongside the T27 types; shared by `AgentLogDrawer.tsx` and its test file (T28 AC2).
+- `src/components/AgentLogDrawer.tsx` — `<AgentLogDrawer agent onClose />` component; 480px fixed panel, z-50, Framer Motion spring entry/exit at x:480→0; `useQuery(['log', agent])` with `staleTime: Infinity` seeds the initial event list; SSE `fleet-update` events are appended via `queryClient.setQueryData` without refetch; auto-scroll fires when within 100px of bottom; Escape/backdrop/× all call `onClose` (T28 AC1–AC6).
+- `src/components/AgentLogDrawer.test.tsx` — 7 Vitest tests covering initial render (AC2), SSE append and cross-agent filter (AC3), three close paths (AC6), and clipboard copy text format (AC5); `MockEventSource` with static `_last` pointer; pre-seeded cache avoids async fetch in tests (T28 AC2/AC3/AC5/AC6).
+
 ### FleetView — agent cards with Framer Motion status ring (T27)
 
 Fleet Console v2 now shows every agent as a live card in a responsive grid. Each card displays the agent's avatar, name, current task, active tool, elapsed time (updating every 10 s), and a colour-coded status ring: green for active agents, amber for paused, red for stuck, grey for stopped. Active agents pulse their ring with a 2 s scale animation. Cards slide in on arrival and fade out on removal. When any agent enters the stuck state, a red alert banner appears above the grid. Clicking a card prepares the drawer context for the log viewer arriving in T28.
