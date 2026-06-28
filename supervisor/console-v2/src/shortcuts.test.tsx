@@ -70,6 +70,13 @@ describe('useShortcuts', () => {
     expect(useShortcutStore.getState().paletteOpen).toBe(false)
   })
 
+  it('AC3: Escape closes help dialog when helpOpen is true', () => {
+    render(<ShortcutsHost />)
+    useShortcutStore.setState({ helpOpen: true })
+    act(() => { fire({ key: 'Escape' }) })
+    expect(useShortcutStore.getState().helpOpen).toBe(false)
+  })
+
   it('AC3: Ctrl+? toggles help dialog open', () => {
     render(<ShortcutsHost />)
     act(() => { fire({ key: '?', ctrlKey: true }) })

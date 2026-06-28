@@ -22,6 +22,6 @@ export const useShortcutStore = create<ShortcutStore>((set) => ({
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),
   navigateTo: (tab) => set({ activeTab: tab }),
-  closeActive: () => set({ paletteOpen: false, activeDrawer: null }),
+  closeActive: () => set({ paletteOpen: false, activeDrawer: null, helpOpen: false }),
   toggleHelp: () => set((s) => ({ helpOpen: !s.helpOpen })),
 }))
