@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **BUG-5** — `console-v2/vite.config.ts`: added `base: '/v2/'` so built assets load from `/v2/assets/...` instead of `/assets/...`. Without this, the React app rendered blank at `/v2/` because asset requests 404'd under the T25 server routing.
+
 ### Keyboard shortcuts — global shortcut map + ⌘? help overlay (T37)
 
 Fleet Console v2 now has keyboard-first navigation. Eight shortcuts cover the most common actions: open the command palette, jump to any of the five tabs, close the active panel, and toggle a full shortcut reference. Press `⌘?` (macOS) or `Ctrl+?` (other platforms) to see the complete map in a centred overlay. Shortcuts are silenced when focus is inside a text field so they never interfere with typing.
