@@ -40,6 +40,8 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console-v2/src/hooks/useShortcuts.ts` | Global keyboard shortcut hook (T37) — registers a `window.addEventListener('keydown', handler)` on mount and removes it on unmount; `isMac()` checks `navigator.platform.includes('Mac')`, `modKey(e)` returns `e.metaKey` (macOS) or `e.ctrlKey` (other platforms); `SUPPRESSED_TAGS = ['INPUT', 'TEXTAREA', 'SELECT']` guard + `target.isContentEditable` check prevent shortcuts from firing inside text fields; full shortcut map: `k` → `openPalette()`, `1`–`5` → `navigateTo('fleet'|'queue'|'pipeline'|'cost'|'trust')`, `Escape` → `closeActive()`, `?` → `toggleHelp()`; consumes Zustand actions via individual selectors to avoid unnecessary re-renders; hook is mounted exactly once in `<App />` (T37 AC1/AC2/AC4) |
 | `console-v2/src/components/ShortcutsDialog.tsx` | Keyboard shortcuts help overlay (T37) — reads `helpOpen` and `toggleHelp` from `useShortcutStore`; returns `null` when `helpOpen` is `false` (no-op render, no portal overhead); outer backdrop `<div role="presentation" className="fixed inset-0 z-50 ...">` closes on click via `onClick={toggleHelp}`; inner `<div role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">` stops propagation; renders a `<table>` with two columns (Shortcut | Action) over `SHORTCUTS` constant (8 rows); `<kbd>` elements styled with `font-mono text-xs bg-[--color-base] border border-[--color-border] rounded`; closes on Escape via `closeActive()` in `useShortcuts` (T37 AC3) |
 | `console-v2/src/shortcuts.test.tsx` | 13 Vitest tests for keyboard shortcuts (T37) — `ShortcutsHost` renders `useShortcuts()` with no UI; `fire(opts)` dispatches `new KeyboardEvent('keydown', ...)` to `window`; `beforeEach` resets store state; `afterEach` calls `cleanup()`; tests: AC1 (Ctrl+K → `paletteOpen=true`; Ctrl+1–5 → correct `activeTab`; Escape → `paletteOpen=false`); AC3 (Ctrl+? → `helpOpen=true`; Ctrl+? again → `helpOpen=false`; Escape with `helpOpen=true` → `helpOpen=false`); AC2 (Ctrl+K suppressed when target is `INPUT`, `TEXTAREA`, or `SELECT` — uses `Object.defineProperty(evt, 'target', ...)` to spoof the event target since `KeyboardEvent.target` is read-only) (T37 AC1/AC2/AC3/AC5) |
+| `console-v2/src/hooks/useFleetStream.ts` | SSE singleton hook (T26) — `FleetEvent` type union (`fleet-update \| approval \| stuck`); module-level singleton state: `_sse: EventSource \| null`, `_refCount: number`, `_backoffMs: number`, `_reconnectTimer`, `_queryClient: QueryClient \| null`, `_EventSourceClass: typeof EventSource \| null`, `_listeners: Set<Listener>`; `_notify(connected, event?)` broadcasts to all listeners; `_connect()` creates `new _EventSourceClass('/api/events')`, wires `onopen` (resets `_backoffMs` to 1000, notifies connected), `onerror` (closes + schedules reconnect via `setTimeout(_backoffMs)` then doubles up to 30s max), and three named event listeners: `fleet-update` → `_queryClient.setQueryData(['fleet', payload.agent], payload)`; `approval` → `_queryClient.invalidateQueries({ queryKey: ['queue'] })`; `stuck` → `_queryClient.setQueryData(['stuck', payload.agent], payload)`; `useFleetStream(EventSourceClass = window.EventSource)` hook: increments `_refCount`, registers a `Listener` that calls `setConnected`/`setLastEvent`, starts connection if `_sse` is null (singleton guarantee); cleanup decrements `_refCount`, deletes listener, and on last consumer: cancels reconnect timer, closes `_sse`, resets all module-level state; `backoffRef = useRef(_backoffMs)` tracks current backoff without triggering re-renders; returns `{ connected: boolean, lastEvent: FleetEvent \| null }` (T26 AC1–AC7) |
+| `console-v2/src/hooks/useFleetStream.test.tsx` | 10 Vitest tests for `useFleetStream` (T26) — `MockEventSource` class with `instances[]` registry, `emit(type, data)` helper, `triggerOpen()`, `triggerError()`, `close()`; `makeWrapper(qc)` wraps `QueryClientProvider`; `afterEach` calls `MockEventSource.reset()` and `jest.useRealTimers()`; `describe('useFleetStream')`: AC1 (2 tests: EventSource opens on mount/closes on unmount at `readyState=2`; `connected=false` initially → `true` after `triggerOpen`); AC2 (2 tests: exponential backoff — 1s→2s→4s disconnect intervals asserted via `jest.useFakeTimers` + `advanceTimersByTime`; backoff resets to 1s after `triggerOpen`); AC3 (2 tests: `fleet-update` → `setQueryData(['fleet', agent], payload)` via `spyOn(qc, 'setQueryData')`; `lastEvent` updated to `{ type: 'fleet-update', agent }` shape); AC4 (1 test: `approval` → `invalidateQueries({ queryKey: ['queue'] })` via `spyOn(qc, 'invalidateQueries').mockImplementation`); AC5 (1 test: `stuck` → `setQueryData(['stuck', payload.agent], payload)`); AC6 (2 tests: two hook instances share one `MockEventSource` — `instances.length === 1`; unmounting first does NOT close; unmounting last sets `readyState=2`; second consumer mounts after `triggerOpen` and gets `connected=true` immediately with still only 1 instance) (T26 AC1–AC7) |
 
 ---
 
@@ -3130,6 +3132,8 @@ supervisor/console-v2/
 │   ├── lib/theme.ts                # Theme type, getStoredTheme, applyTheme, persistTheme (T36)
 │   ├── hooks/useTheme.ts           # useTheme(): toggle, isDark, matchMedia listener (T36)
 │   ├── hooks/useShortcuts.ts       # global keydown listener; shortcut map; focus-suppression guard (T37)
+│   ├── hooks/useFleetStream.ts     # SSE singleton + TanStack Query cache integration (T26)
+│   ├── hooks/useFleetStream.test.tsx # 10 tests: mount/unmount, backoff, fleet-update/approval/stuck, singleton (T26)
 │   ├── store/shortcutStore.ts      # Zustand ShortcutStore: paletteOpen, activeTab, helpOpen + actions (T37)
 │   └── components/
 │       ├── ThemeToggle.tsx         # ghost Button with Sun/Moon icon (T36)
@@ -3637,6 +3641,127 @@ Tests spin up real `http.Server` instances with `makeV2Handler` and a temp `dist
 | AC4 | PR review — `NODE_ENV=development`; start Vite separately; confirm `/v2/` proxies to port 5173 | human-verify |
 | AC5 | `bun test supervisor/console/` — GET / returns v1 index.html unaffected | done_check |
 | AC6 | `bun test supervisor/console/` — no dist/index.html; GET /v2/ → 503 with correct message | done_check |
+
+---
+
+## useFleetStream — SSE singleton + TanStack Query cache (T26)
+
+T26 adds `useFleetStream()`, the shared SSE hook for Fleet Console v2. Any number of components can call the hook; only one `EventSource` connection is ever open. Events are routed directly into TanStack Query's cache so subscribers receive live data without issuing extra network requests.
+
+### Module-level singleton
+
+All state lives at module scope rather than in React:
+
+```typescript
+let _sse: EventSource | null = null
+let _refCount = 0
+let _backoffMs = 1000
+let _reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let _queryClient: QueryClient | null = null
+let _EventSourceClass: typeof EventSource | null = null
+const _listeners = new Set<Listener>()
+```
+
+`_refCount` counts mounted hook consumers. The first consumer calls `_connect()`; subsequent mounts skip it. The last consumer to unmount closes the connection and resets every variable. This ensures no dangling `EventSource` between React renders or HMR reloads.
+
+### Connection lifecycle (AC1)
+
+```typescript
+export function useFleetStream(EventSourceClass: typeof EventSource = window.EventSource) {
+  const queryClient = useQueryClient()
+  // ...
+  useEffect(() => {
+    _refCount++
+    if (!_queryClient) _queryClient = queryClient
+    if (!_EventSourceClass) _EventSourceClass = EventSourceClass
+
+    // Register listener, start connection if needed
+    if (!_sse) { _connect() } else { setConnected(true) }
+
+    return () => {
+      _listeners.delete(listener)
+      _refCount--
+      if (_refCount === 0) {
+        clearTimeout(_reconnectTimer!); _reconnectTimer = null
+        _sse?.close(); _sse = null
+        _backoffMs = 1000; _queryClient = null; _EventSourceClass = null
+      }
+    }
+  }, [EventSourceClass, queryClient])
+
+  return { connected, lastEvent }
+}
+```
+
+### Exponential backoff (AC2)
+
+`_connect()`'s `onerror` handler doubles `_backoffMs` on each failure up to 30 s:
+
+```typescript
+_sse.onerror = () => {
+  _sse?.close(); _sse = null; _notify(false)
+  if (_refCount === 0) return
+  const delay = _backoffMs
+  _backoffMs = Math.min(_backoffMs * 2, 30_000)
+  _reconnectTimer = setTimeout(() => { _reconnectTimer = null; if (_refCount > 0) _connect() }, delay)
+}
+```
+
+`onopen` resets `_backoffMs` to 1000 so reconnects after recovery start fresh.
+
+The backoff value is also mirrored into a `backoffRef = useRef(_backoffMs)` per-consumer so callers can read the current interval without triggering re-renders (spec constraint).
+
+### TanStack Query integration (AC3–AC5)
+
+| Event | Cache operation |
+|---|---|
+| `fleet-update` (agent, …) | `queryClient.setQueryData(['fleet', payload.agent], payload)` |
+| `approval` (…) | `queryClient.invalidateQueries({ queryKey: ['queue'] })` |
+| `stuck` (agent, …) | `queryClient.setQueryData(['stuck', payload.agent], payload)` |
+
+`fleet-update` and `stuck` push data directly; `approval` invalidates so the queue refetches to get a consistent picture.
+
+### `FleetEvent` type
+
+```typescript
+export type FleetEvent =
+  | { type: 'fleet-update'; agent: string; [key: string]: unknown }
+  | { type: 'approval'; [key: string]: unknown }
+  | { type: 'stuck'; agent: string; [key: string]: unknown }
+```
+
+### Testability — `EventSourceClass` parameter (AC7)
+
+The hook accepts an optional `EventSourceClass: typeof EventSource` parameter (default: `window.EventSource`). Tests pass `MockEventSource`, a plain class that exposes `triggerOpen()`, `triggerError()`, and `emit(type, data)` without touching the network. The singleton is reset between tests via `MockEventSource.reset()` + `jest.useRealTimers()` in `afterEach`.
+
+### Test coverage
+
+`src/hooks/useFleetStream.test.tsx` — 10 tests in `describe('useFleetStream')`:
+
+| Test | AC | Assertion |
+|---|---|---|
+| Opens EventSource on mount / closes on unmount | AC1 | `instances.length === 1`; `readyState === 2` after unmount |
+| `connected=false` initially, `true` after `triggerOpen` | AC1 | state transition verified via `renderHook` + `act` |
+| Exponential backoff: 1s → 2s → 4s | AC2 | `advanceTimersByTime` asserts instance count after each interval |
+| Backoff resets to 1s after successful reconnect | AC2 | `triggerOpen` then `triggerError`; next retry fires at 1s not 2s |
+| `fleet-update` → `setQueryData(['fleet', agent], payload)` | AC3 | `spyOn(qc, 'setQueryData')` |
+| `fleet-update` → `lastEvent` updated | AC3 | `result.current.lastEvent` matches `{ type: 'fleet-update', agent }` |
+| `approval` → `invalidateQueries({ queryKey: ['queue'] })` | AC4 | `spyOn(qc, 'invalidateQueries').mockImplementation` |
+| `stuck` → `setQueryData(['stuck', agent], payload)` | AC5 | `spyOn(qc, 'setQueryData')` |
+| Two consumers share one EventSource | AC6 | `instances.length === 1` after two `renderHook` calls |
+| Second consumer receives `connected=true` when already open | AC6 | second hook mounts after `triggerOpen`; `result.current.connected === true` with `instances.length === 1` |
+
+### AC → verification mapping
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `bun test supervisor/console-v2/` — `describe('useFleetStream')` — mount/unmount open/close; connected state | done_check |
+| AC2 | `bun test supervisor/console-v2/` — mock disconnect; assert retry intervals 1s→2s→4s; backoff reset | done_check |
+| AC3 | `bun test supervisor/console-v2/` — emit `fleet-update`; assert `setQueryData(['fleet', agent])` called | done_check |
+| AC4 | `bun test supervisor/console-v2/` — emit `approval`; assert `invalidateQueries({ queryKey: ['queue'] })` | done_check |
+| AC5 | `bun test supervisor/console-v2/` — emit `stuck`; assert `setQueryData(['stuck', agent])` | done_check |
+| AC6 | `bun test supervisor/console-v2/` — two `renderHook` calls → single instance; last unmount closes | done_check |
+| AC7 | Covered by AC1–AC6 (all tests use `MockEventSource` injected via `EventSourceClass` parameter) | done_check |
 
 ---
 
