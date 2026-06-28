@@ -5,6 +5,7 @@ export type FleetEvent =
   | { type: 'fleet-update'; agent: string; [key: string]: unknown }
   | { type: 'approval'; [key: string]: unknown }
   | { type: 'stuck'; agent: string; [key: string]: unknown }
+  | { type: 'resolve'; id: string; [key: string]: unknown }
 
 // Module-level singleton state — shared across all hook consumers
 let _sse: EventSource | null = null
@@ -63,6 +64,12 @@ function _connect() {
     const payload = JSON.parse((e as MessageEvent).data) as { agent: string; [key: string]: unknown }
     _queryClient!.setQueryData(['stuck', payload.agent], payload)
     _notify(true, { type: 'stuck', ...payload })
+  })
+
+  _sse.addEventListener('resolve', (e) => {
+    const payload = JSON.parse((e as MessageEvent).data) as { id: string; [key: string]: unknown }
+    _queryClient!.invalidateQueries({ queryKey: ['queue'] })
+    _notify(true, { type: 'resolve', ...payload })
   })
 }
 
