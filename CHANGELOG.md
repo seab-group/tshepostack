@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Keyboard shortcuts — global shortcut map + ⌘? help overlay (T37)
+
+Fleet Console v2 now has keyboard-first navigation. Eight shortcuts cover the most common actions: open the command palette, jump to any of the five tabs, close the active panel, and toggle a full shortcut reference. Press `⌘?` (macOS) or `Ctrl+?` (other platforms) to see the complete map in a centred overlay. Shortcuts are silenced when focus is inside a text field so they never interfere with typing.
+
+#### Added
+- `src/store/shortcutStore.ts` — Zustand `ShortcutStore` with `paletteOpen`, `activeTab`, `activeDrawer`, `helpOpen` state and actions `openPalette()`, `navigateTo(tab)`, `closeActive()`, `toggleHelp()` (T37 AC4).
+- `src/hooks/useShortcuts.ts` — global `keydown` hook; maps `⌘K`/`Ctrl+K` → palette, `⌘1–5`/`Ctrl+1–5` → tab navigation, `Escape` → `closeActive()`, `⌘?`/`Ctrl+?` → `toggleHelp()`; suppresses shortcuts when target is `INPUT`, `TEXTAREA`, `SELECT`, or `contentEditable` (T37 AC1/AC2).
+- `src/components/ShortcutsDialog.tsx` — centred help overlay with `role="dialog"`, backdrop dismiss, and an 8-row `<kbd>` shortcut table; renders `null` when closed (T37 AC3).
+- `src/shortcuts.test.tsx` — 13 Vitest tests covering AC1 (all 7 shortcuts fire correct store actions), AC2 (suppression on INPUT/TEXTAREA/SELECT), and AC3 (toggle open, toggle closed, Escape closes) (T37 AC5).
+- `package.json` — `zustand@^5.0.14` added as a production dependency (T37 AC4).
+- `test-setup.ts` — `Event` and `KeyboardEvent` polyfills from `dom.window` added for shortcut test compatibility (T37 AC1/AC2/AC5).
+- `App.tsx` — `useShortcuts()` mounted once at root; `<ShortcutsDialog />` rendered at end of outer div (T37 AC3/AC4).
+
 ### Server startup crash fixed — complete server-utils.ts import block restored (BUG-3)
 
 The console server crashed immediately on startup because `defaultWorkspacesPath` and 16 other symbols from `server-utils.ts` were missing from the import block. Every endpoint handler that called `bootstrapWorkspace`, `computeCostData`, `readTrustLedger`, or any of the other absent functions would also crash on first invocation. The full import block is now restored: 17 named exports and 3 type imports re-added. All 23 qa-smoke.sh assertions pass.
