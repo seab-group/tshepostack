@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### QueueView — approval cards + attention cards with Radix UI animations (T29)
+
+Fleet Console v2 now has a working Queue tab. Pending bash-wrapper commands appear as approval cards: click to expand the full command, then Approve or Reject. Tasks needing human unblock appear as attention cards with the full mailbox note and an inline reply textarea. Approved, rejected, or unblocked items animate out at 300 ms as soon as the server confirms or a `resolve` SSE event arrives — whichever comes first. The tab badge keeps a live count of all pending items combined.
+
+#### Added
+- `src/types/queue.ts` — `ApprovalItem`, `AttentionItem`, and `QueueData` interfaces; shared between `QueueView.tsx` and tests (T29).
+- `src/components/QueueView.tsx` — `<QueueView />` fetches `GET /api/queue`; renders "Pending approvals" and "Needs attention" sections; approval cards use `@radix-ui/react-accordion` (`type="single"`) wrapped in Framer Motion `<motion.div layout exit>` for height-to-zero removal; attention cards show task ID pill, agent name, full mailbox note, and expandable unblock textarea; `sendDecision()` POSTs to `/api/decision` and marks the card resolved on success; `resolve` SSE events via `useFleetStream` trigger immediate card removal (T29 AC1–AC7).
+- `src/components/QueueView.test.tsx` — 8 Vitest tests (7 distinct behaviours + AC8 covered by the others): sections render with correct counts; accordion expands/collapses one at a time; Approve fires `{ action:'approve' }` POST; Reject fires `{ action:'reject' }` POST; resolve SSE removes card from DOM; attention card shows all required fields; Unblock submit fires `{ action:'unblock', text }` POST; resolve SSE decrements total badge (T29 AC1–AC8).
+- `@radix-ui/react-accordion@^1.2.0` dependency added to `console-v2/package.json` (T29 AC2).
+- `src/hooks/useFleetStream.ts` extended with `resolve` event type — adds `{ type: 'resolve'; id: string }` to `FleetEvent` union; `resolve` listener calls `invalidateQueries(['queue'])` and notifies all consumers (T29 AC4/AC7).
+- `src/test-setup.ts` extended with `getComputedStyle`, `CustomEvent`, `requestAnimationFrame`, and `cancelAnimationFrame` global stubs required by Radix UI Accordion and Framer Motion in jsdom (T29 AC1).
+
 ### FleetView — agent cards with Framer Motion status ring (T27)
 
 Fleet Console v2 now shows every agent as a live card in a responsive grid. Each card displays the agent's avatar, name, current task, active tool, elapsed time (updating every 10 s), and a colour-coded status ring: green for active agents, amber for paused, red for stuck, grey for stopped. Active agents pulse their ring with a 2 s scale animation. Cards slide in on arrival and fade out on removal. When any agent enters the stuck state, a red alert banner appears above the grid. Clicking a card prepares the drawer context for the log viewer arriving in T28.

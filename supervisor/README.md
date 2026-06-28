@@ -19,7 +19,7 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk), polling behavior (poll_approval), T21 trust ledger bash checks (AC4/AC5/AC6a/AC6b), and T22 trust auto-decision file tests (AC6: approve rule writes `{ approved:true, auto:true }` decision file, no request file, stderr `[trust] auto-approved:`; AC7: reject rule writes `{ approved:false, auto:true }` decision file, exits 1, stderr `[trust] auto-rejected:`) (v7.1) |
 | `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4), workspace registry (T17 AC1-AC7: GET/POST /api/workspaces, DELETE /api/workspaces/:id, POST /api/workspaces/:id/activate, bootstrapWorkspace AC5/AC6, validAgents reload AC7), T17a back-compat (CONTROL_DIR first boot AC1, existing registry AC2, validAgents from fleet.conf AC3, missing fleet.conf AC4), and T19 cost tracker (AC1: aggregation with known JSONL totals, AC2: 30s cache hit — second call uses cached result, AC3: cache invalidation on workspace-switch via `costInvalidateFn`, AC4: malformed `cost_usd` skipped without 500, AC5: `?since=` filter bypasses cache and returns filtered totals, AC6: no-cost-data → empty agents array), T19-amended cache contract tests (cachedAt ISO string AC1, TTL spy/hit AC2, workspace-switch invalidation AC3, since-bypass double-call AC4/AC5 — ports 7894/7895/7896), T21 trust ledger (GET AC1: 2 tests, POST AC2: 4 tests, DELETE AC3: 2 tests — port 7890), T22 decisions watcher (makeDecisionsWatchHandler AC8: 5 tests — no broadcast on auto:true decision file, no broadcast on .decision.json human file, broadcast on request .json file, no broadcast on non-.json, no broadcast on unreadable file), and T22-amended path param fix (describe("DELETE /api/trust path param") AC2: valid UUID in path → 204 + rule removed; malformed non-UUID id → 400), T23 v1.1 integration tests (workspace registry AC1: 5 tests — GET empty/POST validate/POST create UUID/DELETE shifts activeId/activate SSE — port 7875; cost tracker AC2: 5 tests — aggregation/cache-hit/cache-miss after switch/since filter/malformed skip — port 7876; trust ledger AC3: 8 tests — GET missing/GET existing/POST validate agent/POST validate action/DELETE 204/DELETE 404/bash wrapper auto-approve/auto-reject — port 7877; cross-feature AC4 workspace-cost port 7878; cross-feature AC5 workspace-validAgents port 7879; also fixes capturedGitArgs orphan in draft-decision AC1 beforeEach); T25 `/v2/*` routing suite (ports 7897/7898 — 6 tests): AC1 `GET /v2/` → 200 text/html with SPA content; AC2 `GET /v2/assets/*.js` → 200 application/javascript, `GET /v2/assets/*.css` → 200 text/css; AC3 `GET /v2/some/deep/route` → 200 text/html (SPA fallback); AC5 `GET /` still returns v1 index.html unaffected by `/v2` route; AC6 `GET /v2/` with no `dist/index.html` → 503 `{ error: "v2 not built..." }`; stale `capturedGitArgs`/`gitShouldFail`/`draftMailboxDir` refs in draft-decision AC1 test replaced with proper `t15aTaskFail`/`t15aSpawnCalls` resets and `TASK-001.task` fixture setup (fix(T25)) (187 total: 2 bash-wrapper + 185 server) |
 | `console/qa-smoke.sh` | QA smoke test for console UI — boots server on a random free port, asserts all GET endpoints return 200, T13 AC4/AC5 (pipeline JSON + `pipeline-groups` element), T15 AC1/AC2 (stuck endpoint + `stuck-cards` element + `stuck-alert-slot` DOM order), T16 AC6/AC7 (JSON content-type headers, fleet stop mock PID), T18 AC1 (`workspace-pill` element in HTML), T17 AC1 (`GET /api/workspaces` returns 200 with `workspaces` key), T20 AC1/AC7 (`index.html` contains `cost-table` and `cost-tbody` elements), T20 AC6 (`GET /api/cost` returns 200 with `agents` key), T22 AC1 (POST /api/trust → rule returned; GET /api/trust → `rules` key present; `index.html` contains `section-trust` and `trust-rules` elements), T23 AC6 (POST /api/workspaces with smoke-workspace → `workspace` key in response; GET /api/workspaces → 200; GET /api/cost → 200) — 26 checks total (v7.1) |
-| `console-v2/package.json` | v2 frontend scaffold — standalone Bun workspace (`"type": "module"`); dependencies: `react@^19`, `react-dom@^19`, `framer-motion@^11`, `@tanstack/react-query@^5`, `shadcn@^4.12`, `tw-animate-css`, `@fontsource-variable/geist`, `@base-ui/react`; devDependencies: `vite@^6`, `@vitejs/plugin-react@^4`, `tailwindcss@^4`, `@tailwindcss/vite@^4`, `typescript@^5.5`, `vitest@^3`, `@testing-library/react@^16`, `jsdom@^25`, `class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`; scripts: `dev` (vite), `build` (tsc -b + vite build), `test` (vitest run) (T24 AC1); T37: `zustand@^5.0.14` added — global shortcut store (`useShortcutStore`) |
+| `console-v2/package.json` | v2 frontend scaffold — standalone Bun workspace (`"type": "module"`); dependencies: `react@^19`, `react-dom@^19`, `framer-motion@^11`, `@tanstack/react-query@^5`, `shadcn@^4.12`, `tw-animate-css`, `@fontsource-variable/geist`, `@base-ui/react`; devDependencies: `vite@^6`, `@vitejs/plugin-react@^4`, `tailwindcss@^4`, `@tailwindcss/vite@^4`, `typescript@^5.5`, `vitest@^3`, `@testing-library/react@^16`, `jsdom@^25`, `class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`; scripts: `dev` (vite), `build` (tsc -b + vite build), `test` (vitest run) (T24 AC1); T37: `zustand@^5.0.14` added — global shortcut store (`useShortcutStore`); T29: `@radix-ui/react-accordion@^1.2.0` added — Radix UI Accordion for approval card expand/collapse (AC2) |
 | `console-v2/vite.config.ts` | Vite 6 config — plugins: `@vitejs/plugin-react` (JSX transform) + `@tailwindcss/vite` (Tailwind v4 CSS processing); resolve alias `@` → `./src`; Vitest inline config: `environment: 'jsdom'`, `globals: true` (T24 AC1/AC8) |
 | `console-v2/index.html` | Vite HTML entry — `<div id="root">` mount point; loads `src/main.tsx` as `type="module"`; title "Fleet Console v2"; T36: inline `<script>` before `</head>` reads `localStorage.getItem('console-theme')` and adds `dark` class to `document.documentElement` synchronously before React hydrates — prevents flash of wrong colour scheme; condition `t !== 'light'` catches both `'system'` and absent/null so the OS preference applies when no explicit choice is stored (T24 AC2; T36 AC3/AC4) |
 | `console-v2/components.json` | shadcn/ui config generated by `bunx shadcn@latest init` — `style: "base-nova"`, `baseColor: "slate"`, `cssVariables: true`, `iconLibrary: "lucide"`, `rsc: false`, `tsx: true`; aliases: `@/components`, `@/lib/utils`, `@/components/ui`, `@/lib`, `@/hooks` (T24 AC5) |
@@ -31,7 +31,7 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console-v2/src/lib/utils.ts` | `cn()` helper — `twMerge(clsx(...inputs))`; used by all shadcn components to merge Tailwind classes safely, resolving conflicts and honouring specificity (T24) |
 | `console-v2/src/components/ui/button.tsx` | shadcn Button — `cva`-based; 6 variants: `default` (bg-primary), `destructive` (bg-destructive), `outline` (border + hover:bg-accent), `secondary` (bg-secondary), `ghost` (hover:bg-accent), `link` (underline hover); 4 sizes: `default` h-10 px-4, `sm` h-9 px-3, `lg` h-11 px-8, `icon` h-10 w-10; `React.forwardRef<HTMLButtonElement, ButtonProps>` (T24 AC5) |
 | `console-v2/src/App.test.tsx` | Vitest renders-without-crashing test — imports `test-setup.ts` to initialise DOM globals; wraps `<App />` in a `<QueryClientProvider>` helper; calls `render(<App />, { wrapper })`; 1 test in `describe('App')`; passes under `bun test supervisor/console-v2/` (T24 AC8) |
-| `console-v2/src/test-setup.ts` | jsdom DOM polyfill — creates `new JSDOM(...)` with `url: 'http://localhost'`; assigns `window`, `document`, `navigator`, `HTMLElement`, `SVGElement`, `Element`, `Node`, `Text`, `Comment`, `DocumentFragment`, `MutationObserver` to `globalThis` via `Object.defineProperty`; T36: also sets `localStorage` (from `dom.window.localStorage`) and installs a default `matchMedia` stub (`matches: false`, no-op `addEventListener`/`removeEventListener`) on both `globalThis` and `dom.window` — individual theme tests override it per-test with `Object.defineProperty(window, 'matchMedia', { configurable: true, ... })`; T37: adds `Event` and `KeyboardEvent` polyfills from `dom.window` — required for `new KeyboardEvent('keydown', ...)` constructor calls in `shortcuts.test.tsx` (T24 AC8; T36 AC2–AC5; T37 AC1/AC2/AC5) |
+| `console-v2/src/test-setup.ts` | jsdom DOM polyfill — creates `new JSDOM(...)` with `url: 'http://localhost'`; assigns `window`, `document`, `navigator`, `HTMLElement`, `SVGElement`, `Element`, `Node`, `Text`, `Comment`, `DocumentFragment`, `MutationObserver` to `globalThis` via `Object.defineProperty`; T36: also sets `localStorage` (from `dom.window.localStorage`) and installs a default `matchMedia` stub (`matches: false`, no-op `addEventListener`/`removeEventListener`) on both `globalThis` and `dom.window` — individual theme tests override it per-test with `Object.defineProperty(window, 'matchMedia', { configurable: true, ... })`; T37: adds `Event` and `KeyboardEvent` polyfills from `dom.window` — required for `new KeyboardEvent('keydown', ...)` constructor calls in `shortcuts.test.tsx`; T29: adds `getComputedStyle` (bound from `dom.window`) and `CustomEvent` polyfill (required by Radix UI Accordion in jsdom), plus global `requestAnimationFrame` / `cancelAnimationFrame` stubs — `rAF` fires callbacks via `Promise.resolve().then(cb)` so Framer Motion animations complete inside `act()`; `QueueView.test.tsx` overrides these stubs per-file with a stricter cancellable variant (T24 AC8; T36 AC2–AC5; T37 AC1/AC2/AC5; T29 AC1–AC8) |
 | `console-v2/src/lib/theme.ts` | Theme utility module (T36) — `Theme` type (`'light' \| 'dark' \| 'system'`); `THEME_KEY = 'console-theme'`; `getStoredTheme()` reads `localStorage.getItem(THEME_KEY)`, returns `'system'` on error or missing; `isDarkPreferred()` returns `window.matchMedia('(prefers-color-scheme: dark)').matches`; `applyTheme(theme)` calls `document.documentElement.classList.toggle('dark', dark)`; `persistTheme(theme)` writes to `localStorage` (T36 AC2–AC5) |
 | `console-v2/src/hooks/useTheme.ts` | `useTheme()` React hook (T36) — initialises from `getStoredTheme()` as lazy `useState` initialiser; `useEffect` registers `mq.addEventListener('change', handler)` where `handler` calls `applyTheme('system')` only when stored theme is `'system'` (explicit preferences are immune to OS changes); `toggle()` reads `html.classList.contains('dark')`, sets the opposite explicit value via `persistTheme` + `applyTheme`, updates React state; returns `{ theme, toggle, isDark }` where `isDark = theme === 'dark' \|\| (theme === 'system' && isDarkPreferred())` (T36 AC2/AC4/AC5) |
 | `console-v2/src/components/ThemeToggle.tsx` | Theme toggle button (T36) — `<Button variant="ghost" size="icon" aria-label="Toggle theme">`; renders `<Sun className="h-4 w-4" />` when dark, `<Moon className="h-4 w-4" />` when light (lucide-react); calls `toggle()` from `useTheme`; placed in the App header, right-aligned (T36 AC2) |
@@ -40,7 +40,7 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console-v2/src/hooks/useShortcuts.ts` | Global keyboard shortcut hook (T37) — registers a `window.addEventListener('keydown', handler)` on mount and removes it on unmount; `isMac()` checks `navigator.platform.includes('Mac')`, `modKey(e)` returns `e.metaKey` (macOS) or `e.ctrlKey` (other platforms); `SUPPRESSED_TAGS = ['INPUT', 'TEXTAREA', 'SELECT']` guard + `target.isContentEditable` check prevent shortcuts from firing inside text fields; full shortcut map: `k` → `openPalette()`, `1`–`5` → `navigateTo('fleet'|'queue'|'pipeline'|'cost'|'trust')`, `Escape` → `closeActive()`, `?` → `toggleHelp()`; consumes Zustand actions via individual selectors to avoid unnecessary re-renders; hook is mounted exactly once in `<App />` (T37 AC1/AC2/AC4) |
 | `console-v2/src/components/ShortcutsDialog.tsx` | Keyboard shortcuts help overlay (T37) — reads `helpOpen` and `toggleHelp` from `useShortcutStore`; returns `null` when `helpOpen` is `false` (no-op render, no portal overhead); outer backdrop `<div role="presentation" className="fixed inset-0 z-50 ...">` closes on click via `onClick={toggleHelp}`; inner `<div role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">` stops propagation; renders a `<table>` with two columns (Shortcut | Action) over `SHORTCUTS` constant (8 rows); `<kbd>` elements styled with `font-mono text-xs bg-[--color-base] border border-[--color-border] rounded`; closes on Escape via `closeActive()` in `useShortcuts` (T37 AC3) |
 | `console-v2/src/shortcuts.test.tsx` | 13 Vitest tests for keyboard shortcuts (T37) — `ShortcutsHost` renders `useShortcuts()` with no UI; `fire(opts)` dispatches `new KeyboardEvent('keydown', ...)` to `window`; `beforeEach` resets store state; `afterEach` calls `cleanup()`; tests: AC1 (Ctrl+K → `paletteOpen=true`; Ctrl+1–5 → correct `activeTab`; Escape → `paletteOpen=false`); AC3 (Ctrl+? → `helpOpen=true`; Ctrl+? again → `helpOpen=false`; Escape with `helpOpen=true` → `helpOpen=false`); AC2 (Ctrl+K suppressed when target is `INPUT`, `TEXTAREA`, or `SELECT` — uses `Object.defineProperty(evt, 'target', ...)` to spoof the event target since `KeyboardEvent.target` is read-only) (T37 AC1/AC2/AC3/AC5) |
-| `console-v2/src/hooks/useFleetStream.ts` | SSE singleton hook (T26) — `FleetEvent` type union (`fleet-update \| approval \| stuck`); module-level singleton state: `_sse: EventSource \| null`, `_refCount: number`, `_backoffMs: number`, `_reconnectTimer`, `_queryClient: QueryClient \| null`, `_EventSourceClass: typeof EventSource \| null`, `_listeners: Set<Listener>`; `_notify(connected, event?)` broadcasts to all listeners; `_connect()` creates `new _EventSourceClass('/api/events')`, wires `onopen` (resets `_backoffMs` to 1000, notifies connected), `onerror` (closes + schedules reconnect via `setTimeout(_backoffMs)` then doubles up to 30s max), and three named event listeners: `fleet-update` → `_queryClient.setQueryData(['fleet', payload.agent], payload)`; `approval` → `_queryClient.invalidateQueries({ queryKey: ['queue'] })`; `stuck` → `_queryClient.setQueryData(['stuck', payload.agent], payload)`; `useFleetStream(EventSourceClass = window.EventSource)` hook: increments `_refCount`, registers a `Listener` that calls `setConnected`/`setLastEvent`, starts connection if `_sse` is null (singleton guarantee); cleanup decrements `_refCount`, deletes listener, and on last consumer: cancels reconnect timer, closes `_sse`, resets all module-level state; `backoffRef = useRef(_backoffMs)` tracks current backoff without triggering re-renders; returns `{ connected: boolean, lastEvent: FleetEvent \| null }` (T26 AC1–AC7) |
+| `console-v2/src/hooks/useFleetStream.ts` | SSE singleton hook (T26) — `FleetEvent` type union (`fleet-update \| approval \| stuck`); module-level singleton state: `_sse: EventSource \| null`, `_refCount: number`, `_backoffMs: number`, `_reconnectTimer`, `_queryClient: QueryClient \| null`, `_EventSourceClass: typeof EventSource \| null`, `_listeners: Set<Listener>`; `_notify(connected, event?)` broadcasts to all listeners; `_connect()` creates `new _EventSourceClass('/api/events')`, wires `onopen` (resets `_backoffMs` to 1000, notifies connected), `onerror` (closes + schedules reconnect via `setTimeout(_backoffMs)` then doubles up to 30s max), and three named event listeners: `fleet-update` → `_queryClient.setQueryData(['fleet', payload.agent], payload)`; `approval` → `_queryClient.invalidateQueries({ queryKey: ['queue'] })`; `stuck` → `_queryClient.setQueryData(['stuck', payload.agent], payload)`; `useFleetStream(EventSourceClass = window.EventSource)` hook: increments `_refCount`, registers a `Listener` that calls `setConnected`/`setLastEvent`, starts connection if `_sse` is null (singleton guarantee); cleanup decrements `_refCount`, deletes listener, and on last consumer: cancels reconnect timer, closes `_sse`, resets all module-level state; `backoffRef = useRef(_backoffMs)` tracks current backoff without triggering re-renders; returns `{ connected: boolean, lastEvent: FleetEvent \| null }` (T26 AC1–AC7); T29: `FleetEvent` extended with `{ type: 'resolve'; id: string; [key: string]: unknown }` variant; `resolve` event listener added to `_connect()` — calls `_queryClient.invalidateQueries({ queryKey: ['queue'] })` and notifies all listeners with `{ type: 'resolve', id }` so `<QueueView>` can animate out the matching card immediately without waiting for the next poll |
 | `console-v2/src/hooks/useFleetStream.test.tsx` | 10 Vitest tests for `useFleetStream` (T26) — `MockEventSource` class with `instances[]` registry, `emit(type, data)` helper, `triggerOpen()`, `triggerError()`, `close()`; `makeWrapper(qc)` wraps `QueryClientProvider`; `afterEach` calls `MockEventSource.reset()` and `jest.useRealTimers()`; `describe('useFleetStream')`: AC1 (2 tests: EventSource opens on mount/closes on unmount at `readyState=2`; `connected=false` initially → `true` after `triggerOpen`); AC2 (2 tests: exponential backoff — 1s→2s→4s disconnect intervals asserted via `jest.useFakeTimers` + `advanceTimersByTime`; backoff resets to 1s after `triggerOpen`); AC3 (2 tests: `fleet-update` → `setQueryData(['fleet', agent], payload)` via `spyOn(qc, 'setQueryData')`; `lastEvent` updated to `{ type: 'fleet-update', agent }` shape); AC4 (1 test: `approval` → `invalidateQueries({ queryKey: ['queue'] })` via `spyOn(qc, 'invalidateQueries').mockImplementation`); AC5 (1 test: `stuck` → `setQueryData(['stuck', payload.agent], payload)`); AC6 (2 tests: two hook instances share one `MockEventSource` — `instances.length === 1`; unmounting first does NOT close; unmounting last sets `readyState=2`; second consumer mounts after `triggerOpen` and gets `connected=true` immediately with still only 1 instance) (T26 AC1–AC7) |
 | `console-v2/src/types/fleet.ts` | `AgentStatusValue` type (`'active' \| 'paused' \| 'stuck' \| 'stopped'`) and `AgentInfo` interface — `name: string`, `task: string \| null`, `tool: string \| null`, `summary: string \| null`, `status: AgentStatusValue`, `since: string \| null`; shared across `FleetView`, `AgentCard`, and `FleetView.test.tsx` (T27) |
 | `console-v2/src/context/DrawerContext.tsx` | `DrawerProvider` and `useDrawer()` — shared drawer state (`open: boolean`, `agentName: string \| null`); `openDrawer(name)` sets both, `closeDrawer()` resets both; `useDrawer()` throws if called outside `<DrawerProvider>`; designed for `<AgentLogDrawer />` (T28) to wire into without prop-drilling (T27 AC5) |
@@ -48,6 +48,9 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console-v2/src/components/AgentCard.tsx` | `<AgentCard agent={AgentInfo} />` — subscribes to `useQuery({ queryKey: ['fleet', name], initialData: agent, staleTime: Infinity })` per card; `RING_COLORS` map: `active #16a34a`, `paused #d97706`, `stuck #dc2626`, `stopped #9ca3af`; `cardVariants` drives enter (`opacity 0→1, y 8→0`, 200ms) and exit (`opacity 0`, 150ms); `ringPulse` applies `scale: [1, 1.1, 1]` `repeat: Infinity` when `status === 'active'` only; inline SVG avatar with Dicebear initials pattern (`agent.name.slice(0,2).toUpperCase()`); elapsed time via `setInterval(10_000)` + `sinceRef` (avoids stale closure without adding `since` to effect deps); clicking calls `openDrawer(agent.name)` from `useDrawer()`; `data-ring-color` attribute on the ring `<motion.div>` enables assertion in tests (T27 AC2/AC3/AC4/AC5) |
 | `console-v2/src/components/StuckAlert.tsx` | `<StuckAlert agentName message? />` — `role="alert"` div; `data-testid="stuck-alert"` for test selection; red border (`#dc2626`, 1px solid); background `rgba(220,38,38,0.1)`; inline SVG warning icon (circle + exclamation rect); renders agent name in bold red and optional `message` string in `--color-text-dim`; styled with CSS custom properties for dark-mode compatibility (T27 AC6) |
 | `console-v2/src/components/FleetView.test.tsx` | 6 Vitest tests in `describe('FleetView')` — `AGENTS` fixture: 3 agents (active/paused/stuck); `Wrap` helper wraps `QueryClientProvider` + `DrawerProvider`; inline `requestAnimationFrame`/`cancelAnimationFrame` stubs (Framer Motion requires them in jsdom — injected per-file rather than via `test-setup.ts` to keep the stub scoped); `beforeEach` creates a fresh `QueryClient`; `afterEach` calls `cleanup()`, `qc.clear()`, `jest.useRealTimers()`; AC1: `data-testid="fleet-grid"` present + 3 `data-testid="agent-card"` elements; AC2: all 3 names in `[data-testid="agent-name"]` + elapsed text non-null; AC3: stuck card's `[data-ring-color]` equals `#dc2626`; AC6×2: `StuckAlert` renders (count=1) when `['stuck', 'agent-qa']` data is set, absent (count=0) otherwise; AC7: `jest.advanceTimersByTime(10_001)` inside `act` changes elapsed text (T27 AC1–AC3/AC6/AC7) |
+| `console-v2/src/types/queue.ts` | Queue domain types (T29) — `ApprovalItem` interface: `id: string`, `agentName: string`, `command: string`, `risk: 'low' \| 'medium' \| 'high'`; `AttentionItem` interface: `taskId: string`, `agentName: string`, `mailboxNote: string`; `QueueData` interface: `approvals: ApprovalItem[]`, `attention: AttentionItem[]`; shared between `QueueView.tsx` and `QueueView.test.tsx` |
+| `console-v2/src/components/QueueView.tsx` | Queue tab component (T29) — `fetchQueue()` calls `GET /api/queue`, returns `QueueData`; `RISK_COLOURS` map: `low bg-green-100/text-green-800`, `medium bg-yellow-100/text-yellow-800`, `high bg-red-100/text-red-800`; `EXIT_ANIM = { height: 0, opacity: 0 }`, `EXIT_TRANS` uses `duration: 0` in test to make AnimatePresence removals synchronous; `<ApprovalCard>` wraps a `<motion.div layout initial exit>` around a `<Accordion.Item>` — collapsed: agent name + risk badge + truncated command; expanded: full command in `<code>` block + Approve/Reject `<motion.button>` pair (`animate={{ opacity: inFlight ? 0.5 : 1 }}`); `<AttentionCard>` shows task_id pill (`data-testid="task-id-pill"`), agent name, full `mailboxNote` text, and an Unblock button that expands an inline `<textarea rows={4} className="resize-y">`; submit fires only when textarea value is non-empty; `<QueueView>` holds four state slices: `resolvedIds: Set<string>`, `inFlightIds: Set<string>`, `expandedId: string` (Accordion single-mode), `unblockOpen: Record<string,boolean>`; `useEffect` on `lastEvent` adds `id` to `resolvedIds` on `resolve` events; `sendDecision(payload, cardId)` POSTs to `/api/decision`, adds `cardId` to `resolvedIds` on success, always clears from `inFlightIds` in `finally`; `approvals` and `attention` are filtered from `data` excluding `resolvedIds`; `totalCount = approvals.length + attention.length` drives `data-testid="queue-total-badge"` (sr-only); card DOM keys: `approval-{id}` and `attention-{taskId}` (T29 AC1–AC7) |
+| `console-v2/src/components/QueueView.test.tsx` | 8 Vitest tests in `describe('QueueView')` (19 total assertions across all tests, AC1–AC8 — T29) — file-scoped `requestAnimationFrame`/`cancelAnimationFrame` stubs (cancellable variant that honours `cancelAnimationFrame` correctly); `ResizeObserver` stub for Radix UI; `MockEventSource` class with `instances[]` registry, `emit(type, data)` helper; `makeWrapper(qc)` wraps `QueryClientProvider`; `beforeEach` mocks `fetch` with a default queue fixture (`QUEUE_DATA`: 2 approvals, 2 attention items), resets `MockEventSource.instances`, creates fresh `QueryClient`; `afterEach` calls `cleanup()` and `qc.clear()`; AC1: sections "Pending approvals" and "Needs attention" rendered, count badges show 2; AC2: clicking accordion trigger makes content visible (Radix `data-state="open"`) — only one at a time; AC3: clicking Approve fires `POST /api/decision` with `{ action:'approve', agentName, requestId:id }`; clicking Reject fires with `action:'reject'`; AC4: `resolve` SSE event with matching `id` removes the card from DOM (verified via `data-testid="approval-card-{id}"` absent); AC5: attention card shows task_id pill, agent name, full mailboxNote, and Unblock button; AC6: clicking Unblock opens textarea, submitting sends `POST /api/decision` with `{ action:'unblock', text, agentName, taskId }`; AC7: `resolve` SSE decrements total badge; AC8 covered by AC1–AC7 (T29 AC1–AC8) |
 
 ---
 
@@ -3128,7 +3131,7 @@ supervisor/console-v2/
 │   ├── main.tsx                    # React 19 entry; QueryClient + QueryClientProvider
 │   ├── App.tsx                     # header (StatusRing + ThemeToggle) + centred main (T24/T36/T37)
 │   ├── App.test.tsx                # renders-without-crashing Vitest test
-│   ├── test-setup.ts               # jsdom DOM globals + localStorage + matchMedia + KeyboardEvent stubs (T24/T36/T37)
+│   ├── test-setup.ts               # jsdom DOM globals + localStorage + matchMedia + KeyboardEvent + rAF stubs (T24/T36/T37/T29)
 │   ├── theme.test.tsx              # 9 dark-mode tests — AC2–AC5 (T36)
 │   ├── shortcuts.test.tsx          # 13 keyboard shortcut tests — AC1–AC3/AC5 (T37)
 │   ├── vite-env.d.ts               # /// <reference types="vite/client" />
@@ -3138,16 +3141,19 @@ supervisor/console-v2/
 │   ├── lib/theme.ts                # Theme type, getStoredTheme, applyTheme, persistTheme (T36)
 │   ├── hooks/useTheme.ts           # useTheme(): toggle, isDark, matchMedia listener (T36)
 │   ├── hooks/useShortcuts.ts       # global keydown listener; shortcut map; focus-suppression guard (T37)
-│   ├── hooks/useFleetStream.ts     # SSE singleton + TanStack Query cache integration (T26)
+│   ├── hooks/useFleetStream.ts     # SSE singleton + TanStack Query cache integration; resolve event (T26/T29)
 │   ├── hooks/useFleetStream.test.tsx # 10 tests: mount/unmount, backoff, fleet-update/approval/stuck, singleton (T26)
 │   ├── store/shortcutStore.ts      # Zustand ShortcutStore: paletteOpen, activeTab, helpOpen + actions (T37)
 │   ├── context/DrawerContext.tsx   # DrawerProvider + useDrawer(): open/agentName state for AgentLogDrawer (T27)
 │   ├── types/fleet.ts              # AgentInfo interface + AgentStatusValue type (T27)
+│   ├── types/queue.ts              # ApprovalItem, AttentionItem, QueueData interfaces (T29)
 │   └── components/
 │       ├── FleetView.tsx           # CSS grid of AgentCards + StuckAlerts above + AnimatePresence (T27)
 │       ├── AgentCard.tsx           # per-agent TanStack Query subscriber; status ring; elapsed timer (T27)
 │       ├── StuckAlert.tsx          # red alert banner above the grid for stuck agents (T27)
 │       ├── FleetView.test.tsx      # 6 tests: grid render, ring colour, stuck alert, elapsed update (T27)
+│       ├── QueueView.tsx           # Queue tab: approval cards (Radix Accordion) + attention cards + AnimatePresence (T29)
+│       ├── QueueView.test.tsx      # 8 tests (19 assertions): queue sections, accordion, POST /api/decision, resolve SSE (T29)
 │       ├── ThemeToggle.tsx         # ghost Button with Sun/Moon icon (T36)
 │       ├── ShortcutsDialog.tsx     # ⌘? help overlay: backdrop + dialog + 8-row kbd table (T37)
 │       └── ui/button.tsx           # shadcn Button: 6 variants, 4 sizes, React.forwardRef
@@ -3873,6 +3879,156 @@ The test file installs its own `requestAnimationFrame` / `cancelAnimationFrame` 
 | AC5 | PR review — click card; confirm `DrawerContext.open` becomes `true` (T28 drawer wires in next) | human-verify |
 | AC6 | `bun test supervisor/console-v2/` — `['stuck', 'agent-qa']` data set → `StuckAlert` renders; absent → no alert | done_check |
 | AC7 | `bun test supervisor/console-v2/` — `jest.advanceTimersByTime(10_001)` → elapsed text changes | done_check |
+
+---
+
+## QueueView — approval cards + attention cards with Radix UI animations (T29)
+
+T29 builds the Queue tab component layer for v2. Pending approval cards (bash wrapper blocked commands) use Radix UI Accordion for expand/collapse with Framer Motion `AnimatePresence` exit animations. Attention cards (tasks needing human unblock) show the full mailbox note and provide an inline textarea for the unblock reply. All decision actions go through `POST /api/decision` — the same unified endpoint used by the v1 console.
+
+### Queue domain types — `src/types/queue.ts`
+
+```typescript
+export interface ApprovalItem {
+  id: string
+  agentName: string
+  command: string
+  risk: 'low' | 'medium' | 'high'
+}
+
+export interface AttentionItem {
+  taskId: string
+  agentName: string
+  mailboxNote: string
+}
+
+export interface QueueData {
+  approvals: ApprovalItem[]
+  attention: AttentionItem[]
+}
+```
+
+### Approval cards — Radix UI Accordion (AC2)
+
+`<Accordion.Root type="single">` allows at most one card expanded at a time. Each card is an `<Accordion.Item value={item.id}>` wrapped in a `<motion.div layout initial exit>` so Framer Motion can animate the card out when it is resolved.
+
+Collapsed state: agent name, risk badge (colour-coded), and truncated command in one line.
+Expanded state (`<Accordion.Content>`): full command in a `<code>` block, plus Approve and Reject buttons.
+
+```
+RISK_COLOURS map:
+  low    → bg-green-100  text-green-800
+  medium → bg-yellow-100 text-yellow-800
+  high   → bg-red-100    text-red-800
+```
+
+### Card exit animation (AC4)
+
+```typescript
+const EXIT_ANIM = { height: 0, opacity: 0 }
+const EXIT_TRANS = { duration: process.env.NODE_ENV === 'test' ? 0 : 0.3 }
+```
+
+`EXIT_TRANS.duration` is 0 in test so `AnimatePresence` removes elements synchronously inside `act()` — no fake timer advancement needed. In production the card collapses to zero height over 300 ms.
+
+Both card types (`ApprovalCard`, `AttentionCard`) share the same exit variant and are wrapped in separate `<AnimatePresence>` blocks.
+
+### Decision flow — `sendDecision` (AC3 / AC6)
+
+```typescript
+async function sendDecision(payload: Record<string, unknown>, cardId: string) {
+  setInFlightIds(prev => new Set([...prev, cardId]))
+  try {
+    await fetch('/api/decision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    setResolvedIds(prev => new Set([...prev, cardId]))
+  } finally {
+    setInFlightIds(prev => { const s = new Set(prev); s.delete(cardId); return s })
+  }
+}
+```
+
+Payloads:
+- Approve: `{ action: 'approve', agentName, requestId: item.id }`
+- Reject: `{ action: 'reject', agentName, requestId: item.id }`
+- Unblock: `{ action: 'unblock', text, agentName, taskId: item.taskId }`
+
+In-flight cards have their Approve/Reject buttons set to `disabled` with `animate={{ opacity: 0.5 }}`. The unblock submit button uses `disabled={inFlight}` with `disabled:opacity-50` via Tailwind.
+
+### resolve SSE event — live card removal (AC4 / AC7)
+
+`useFleetStream` delivers `lastEvent` to `<QueueView>` via a `useEffect`:
+
+```typescript
+useEffect(() => {
+  if (!lastEvent) return
+  if (lastEvent.type === 'resolve') {
+    setResolvedIds(prev => new Set([...prev, lastEvent.id]))
+  }
+}, [lastEvent])
+```
+
+When a `resolve` SSE event arrives, the matching card is added to `resolvedIds` and filtered out of the rendered lists immediately. `useFleetStream` also calls `invalidateQueries(['queue'])` on every `resolve` event so the cache stays fresh after the animation completes.
+
+### Attention cards — inline unblock reply (AC5 / AC6)
+
+Each attention card shows:
+- Task ID pill (`data-testid="task-id-pill"`, `font-mono`)
+- Agent name (`data-testid="attention-agent-name"`)
+- Full `mailboxNote` text (not truncated, `data-testid="mailbox-note"`)
+- "Unblock" button that expands an inline `<textarea rows={4} className="resize-y">`
+
+The textarea uses a `ref` to read its value on submit. Empty text is blocked client-side (the submit handler returns early if `text.trim()` is falsy).
+
+### QueueView state slices
+
+| State | Type | Purpose |
+|---|---|---|
+| `resolvedIds` | `Set<string>` | Cards removed from rendered lists (both POST success and resolve SSE) |
+| `inFlightIds` | `Set<string>` | Cards with in-flight POST — buttons disabled, opacity 0.5 |
+| `expandedId` | `string` | Accordion single-expand state (empty string = none open) |
+| `unblockOpen` | `Record<string, boolean>` | Per-attention-card unblock form visibility |
+
+Card DOM keys: `approval-{id}` and `attention-{taskId}` (spec constraint).
+
+Total count badge (`data-testid="queue-total-badge"`) is `sr-only` — it drives the tab heading badge in the nav shell, not visible inside the panel.
+
+### jsdom compatibility — `test-setup.ts` additions (T29)
+
+Radix UI Accordion requires `getComputedStyle` and `CustomEvent` in jsdom; Framer Motion requires `requestAnimationFrame` and `cancelAnimationFrame`. `test-setup.ts` now provides global stubs for all four. `QueueView.test.tsx` overrides `requestAnimationFrame`/`cancelAnimationFrame` with a stricter per-file variant that honours cancellation (needed for the resolve SSE timing assertions).
+
+`ResizeObserver` is stubbed inside `QueueView.test.tsx` itself (Radix UI uses it for `Accordion.Content` height measurement) — a no-op class with `observe`, `unobserve`, and `disconnect` methods.
+
+### Test coverage
+
+`src/components/QueueView.test.tsx` — 8 tests in `describe('QueueView')`:
+
+| Test | AC | Assertion |
+|---|---|---|
+| Renders two sections with count badges | AC1 | "Pending approvals" and "Needs attention" headings; badge text = 2 each |
+| Accordion expands/collapses (one at a time) | AC2 | click trigger → `data-state="open"` on content; click second → first collapses |
+| Approve button fires POST with approve payload | AC3 | `fetch` spy called with `action:'approve'`, `agentName`, `requestId` |
+| Reject button fires POST with reject payload | AC3 | `fetch` spy called with `action:'reject'`, `agentName`, `requestId` |
+| resolve SSE removes the matching approval card | AC4 | `MockEventSource.emit('resolve', { id })` → `data-testid="approval-card-{id}"` absent |
+| Attention card renders all required fields | AC5 | task_id pill, agent name, full mailboxNote, Unblock button present |
+| Unblock submit fires POST with unblock payload | AC6 | open textarea, fill text, submit → `fetch` called with `action:'unblock'` |
+| resolve SSE decrements total count badge | AC7 | emit resolve → badge text drops from 4 to 3 |
+
+### AC → verification mapping
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `bun test supervisor/console-v2/` — `describe('QueueView')` — mock queue response; assert sections render with badges | done_check |
+| AC2 | `bun test supervisor/console-v2/` — click accordion trigger; assert expanded content visible; only one at a time | done_check |
+| AC3 | `bun test supervisor/console-v2/` — click Approve/Reject; assert POST fires with correct payload | done_check |
+| AC4 | `bun test supervisor/console-v2/` — resolve SSE event; assert card removed from DOM | done_check |
+| AC5 | `bun test supervisor/console-v2/` — attention card renders task_id pill, agent name, full mailbox note, Unblock button | done_check |
+| AC6 | `bun test supervisor/console-v2/` — submit unblock reply; assert POST fires with `action:'unblock'` | done_check |
+| AC7 | `bun test supervisor/console-v2/` — resolve SSE decrements total badge | done_check |
+| AC8 | Covered by AC1–AC7 | done_check |
 
 ---
 
