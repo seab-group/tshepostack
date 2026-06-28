@@ -29,7 +29,25 @@ import {
   resolvePort,
   readApprovals,
   makeV2Handler,
+  defaultWorkspacesPath,
+  bootstrapWorkspace,
+  makeRateLimiter,
+  readAndValidatePostBody,
+  readPidFile,
+  defaultIsProcessAlive,
+  defaultKillFn,
+  stopProcess,
+  readLogTail,
+  computeStuckSignals,
+  computeCostData,
+  readWorkspaceRegistry,
+  writeWorkspaceRegistry,
+  readTrustLedger,
+  writeTrustLedger,
+  defaultTrustPath,
+  purgeStaleDecisionFiles,
 } from "./server-utils.ts";
+import type { CostResponse, Workspace, TrustRule } from "./server-utils.ts";
 
 // Validate PORT early — before any filesystem reads (AC5: exit 1 before bind).
 const PORT = (() => {
