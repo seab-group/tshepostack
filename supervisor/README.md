@@ -42,6 +42,12 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console-v2/src/shortcuts.test.tsx` | 13 Vitest tests for keyboard shortcuts (T37) — `ShortcutsHost` renders `useShortcuts()` with no UI; `fire(opts)` dispatches `new KeyboardEvent('keydown', ...)` to `window`; `beforeEach` resets store state; `afterEach` calls `cleanup()`; tests: AC1 (Ctrl+K → `paletteOpen=true`; Ctrl+1–5 → correct `activeTab`; Escape → `paletteOpen=false`); AC3 (Ctrl+? → `helpOpen=true`; Ctrl+? again → `helpOpen=false`; Escape with `helpOpen=true` → `helpOpen=false`); AC2 (Ctrl+K suppressed when target is `INPUT`, `TEXTAREA`, or `SELECT` — uses `Object.defineProperty(evt, 'target', ...)` to spoof the event target since `KeyboardEvent.target` is read-only) (T37 AC1/AC2/AC3/AC5) |
 | `console-v2/src/hooks/useFleetStream.ts` | SSE singleton hook (T26) — `FleetEvent` type union (`fleet-update \| approval \| stuck`); module-level singleton state: `_sse: EventSource \| null`, `_refCount: number`, `_backoffMs: number`, `_reconnectTimer`, `_queryClient: QueryClient \| null`, `_EventSourceClass: typeof EventSource \| null`, `_listeners: Set<Listener>`; `_notify(connected, event?)` broadcasts to all listeners; `_connect()` creates `new _EventSourceClass('/api/events')`, wires `onopen` (resets `_backoffMs` to 1000, notifies connected), `onerror` (closes + schedules reconnect via `setTimeout(_backoffMs)` then doubles up to 30s max), and three named event listeners: `fleet-update` → `_queryClient.setQueryData(['fleet', payload.agent], payload)`; `approval` → `_queryClient.invalidateQueries({ queryKey: ['queue'] })`; `stuck` → `_queryClient.setQueryData(['stuck', payload.agent], payload)`; `useFleetStream(EventSourceClass = window.EventSource)` hook: increments `_refCount`, registers a `Listener` that calls `setConnected`/`setLastEvent`, starts connection if `_sse` is null (singleton guarantee); cleanup decrements `_refCount`, deletes listener, and on last consumer: cancels reconnect timer, closes `_sse`, resets all module-level state; `backoffRef = useRef(_backoffMs)` tracks current backoff without triggering re-renders; returns `{ connected: boolean, lastEvent: FleetEvent \| null }` (T26 AC1–AC7) |
 | `console-v2/src/hooks/useFleetStream.test.tsx` | 10 Vitest tests for `useFleetStream` (T26) — `MockEventSource` class with `instances[]` registry, `emit(type, data)` helper, `triggerOpen()`, `triggerError()`, `close()`; `makeWrapper(qc)` wraps `QueryClientProvider`; `afterEach` calls `MockEventSource.reset()` and `jest.useRealTimers()`; `describe('useFleetStream')`: AC1 (2 tests: EventSource opens on mount/closes on unmount at `readyState=2`; `connected=false` initially → `true` after `triggerOpen`); AC2 (2 tests: exponential backoff — 1s→2s→4s disconnect intervals asserted via `jest.useFakeTimers` + `advanceTimersByTime`; backoff resets to 1s after `triggerOpen`); AC3 (2 tests: `fleet-update` → `setQueryData(['fleet', agent], payload)` via `spyOn(qc, 'setQueryData')`; `lastEvent` updated to `{ type: 'fleet-update', agent }` shape); AC4 (1 test: `approval` → `invalidateQueries({ queryKey: ['queue'] })` via `spyOn(qc, 'invalidateQueries').mockImplementation`); AC5 (1 test: `stuck` → `setQueryData(['stuck', payload.agent], payload)`); AC6 (2 tests: two hook instances share one `MockEventSource` — `instances.length === 1`; unmounting first does NOT close; unmounting last sets `readyState=2`; second consumer mounts after `triggerOpen` and gets `connected=true` immediately with still only 1 instance) (T26 AC1–AC7) |
+| `console-v2/src/types/fleet.ts` | `AgentStatusValue` type (`'active' \| 'paused' \| 'stuck' \| 'stopped'`) and `AgentInfo` interface — `name: string`, `task: string \| null`, `tool: string \| null`, `summary: string \| null`, `status: AgentStatusValue`, `since: string \| null`; shared across `FleetView`, `AgentCard`, and `FleetView.test.tsx` (T27) |
+| `console-v2/src/context/DrawerContext.tsx` | `DrawerProvider` and `useDrawer()` — shared drawer state (`open: boolean`, `agentName: string \| null`); `openDrawer(name)` sets both, `closeDrawer()` resets both; `useDrawer()` throws if called outside `<DrawerProvider>`; designed for `<AgentLogDrawer />` (T28) to wire into without prop-drilling (T27 AC5) |
+| `console-v2/src/components/FleetView.tsx` | `<FleetView agents={AgentInfo[]} />` — reads `queryClient.getQueryData(['stuck', agentName])` for each agent via `useQueryClient()`; renders a `<StuckAlert />` per stuck agent above the grid; CSS grid (`gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))'`, `gap: 16px`); wraps `<AgentCard key={agent.name} />` children in `<AnimatePresence>` so exit animations fire on card removal (T27 AC1/AC3/AC6) |
+| `console-v2/src/components/AgentCard.tsx` | `<AgentCard agent={AgentInfo} />` — subscribes to `useQuery({ queryKey: ['fleet', name], initialData: agent, staleTime: Infinity })` per card; `RING_COLORS` map: `active #16a34a`, `paused #d97706`, `stuck #dc2626`, `stopped #9ca3af`; `cardVariants` drives enter (`opacity 0→1, y 8→0`, 200ms) and exit (`opacity 0`, 150ms); `ringPulse` applies `scale: [1, 1.1, 1]` `repeat: Infinity` when `status === 'active'` only; inline SVG avatar with Dicebear initials pattern (`agent.name.slice(0,2).toUpperCase()`); elapsed time via `setInterval(10_000)` + `sinceRef` (avoids stale closure without adding `since` to effect deps); clicking calls `openDrawer(agent.name)` from `useDrawer()`; `data-ring-color` attribute on the ring `<motion.div>` enables assertion in tests (T27 AC2/AC3/AC4/AC5) |
+| `console-v2/src/components/StuckAlert.tsx` | `<StuckAlert agentName message? />` — `role="alert"` div; `data-testid="stuck-alert"` for test selection; red border (`#dc2626`, 1px solid); background `rgba(220,38,38,0.1)`; inline SVG warning icon (circle + exclamation rect); renders agent name in bold red and optional `message` string in `--color-text-dim`; styled with CSS custom properties for dark-mode compatibility (T27 AC6) |
+| `console-v2/src/components/FleetView.test.tsx` | 6 Vitest tests in `describe('FleetView')` — `AGENTS` fixture: 3 agents (active/paused/stuck); `Wrap` helper wraps `QueryClientProvider` + `DrawerProvider`; inline `requestAnimationFrame`/`cancelAnimationFrame` stubs (Framer Motion requires them in jsdom — injected per-file rather than via `test-setup.ts` to keep the stub scoped); `beforeEach` creates a fresh `QueryClient`; `afterEach` calls `cleanup()`, `qc.clear()`, `jest.useRealTimers()`; AC1: `data-testid="fleet-grid"` present + 3 `data-testid="agent-card"` elements; AC2: all 3 names in `[data-testid="agent-name"]` + elapsed text non-null; AC3: stuck card's `[data-ring-color]` equals `#dc2626`; AC6×2: `StuckAlert` renders (count=1) when `['stuck', 'agent-qa']` data is set, absent (count=0) otherwise; AC7: `jest.advanceTimersByTime(10_001)` inside `act` changes elapsed text (T27 AC1–AC3/AC6/AC7) |
 
 ---
 
@@ -3135,7 +3141,13 @@ supervisor/console-v2/
 │   ├── hooks/useFleetStream.ts     # SSE singleton + TanStack Query cache integration (T26)
 │   ├── hooks/useFleetStream.test.tsx # 10 tests: mount/unmount, backoff, fleet-update/approval/stuck, singleton (T26)
 │   ├── store/shortcutStore.ts      # Zustand ShortcutStore: paletteOpen, activeTab, helpOpen + actions (T37)
+│   ├── context/DrawerContext.tsx   # DrawerProvider + useDrawer(): open/agentName state for AgentLogDrawer (T27)
+│   ├── types/fleet.ts              # AgentInfo interface + AgentStatusValue type (T27)
 │   └── components/
+│       ├── FleetView.tsx           # CSS grid of AgentCards + StuckAlerts above + AnimatePresence (T27)
+│       ├── AgentCard.tsx           # per-agent TanStack Query subscriber; status ring; elapsed timer (T27)
+│       ├── StuckAlert.tsx          # red alert banner above the grid for stuck agents (T27)
+│       ├── FleetView.test.tsx      # 6 tests: grid render, ring colour, stuck alert, elapsed update (T27)
 │       ├── ThemeToggle.tsx         # ghost Button with Sun/Moon icon (T36)
 │       ├── ShortcutsDialog.tsx     # ⌘? help overlay: backdrop + dialog + 8-row kbd table (T37)
 │       └── ui/button.tsx           # shadcn Button: 6 variants, 4 sizes, React.forwardRef
@@ -3762,6 +3774,105 @@ The hook accepts an optional `EventSourceClass: typeof EventSource` parameter (d
 | AC5 | `bun test supervisor/console-v2/` — emit `stuck`; assert `setQueryData(['stuck', agent])` | done_check |
 | AC6 | `bun test supervisor/console-v2/` — two `renderHook` calls → single instance; last unmount closes | done_check |
 | AC7 | Covered by AC1–AC6 (all tests use `MockEventSource` injected via `EventSourceClass` parameter) | done_check |
+
+---
+
+## FleetView — agent cards with Framer Motion status ring (T27)
+
+T27 builds the Fleet tab's component layer for v2. Each agent in the fleet is rendered as a card in a responsive CSS grid. Cards show a colour-coded status ring, avatar, name, current task, active tool, and elapsed time. Framer Motion drives the ring pulse animation for active agents and the enter/exit card transitions. Clicking any card will open the `<AgentLogDrawer />` once T28 wires it in.
+
+### `AgentInfo` type — `src/types/fleet.ts`
+
+```typescript
+export type AgentStatusValue = 'active' | 'paused' | 'stuck' | 'stopped'
+
+export interface AgentInfo {
+  name: string
+  task: string | null
+  tool: string | null
+  summary: string | null
+  status: AgentStatusValue
+  since: string | null
+}
+```
+
+`since` is an ISO timestamp string (or `null` when the agent has no active task). `AgentCard` computes elapsed time from it client-side.
+
+### Status ring colours (AC3)
+
+| Status | Border colour | Pulse animation |
+|---|---|---|
+| `active` | `#16a34a` (green-600) | `scale: [1, 1.1, 1]` 2s repeat:Infinity |
+| `paused` | `#d97706` (amber-600) | none |
+| `stuck` | `#dc2626` (red-600) | none |
+| `stopped` | `#9ca3af` (gray-400) | none |
+
+The ring is a `<motion.div>` with `border-radius: 50%` and `border: 3px solid {color}`. The `animate` prop receives the `ringPulse` variant only when `status === 'active'`; other statuses receive `undefined` so the ring sits static. The `data-ring-color` attribute on the ring element is set to the hex value, giving tests a stable selector independent of CSS class names.
+
+### Card enter / exit animation (AC4)
+
+Motion variants are defined at module scope (not inline) to satisfy the Framer Motion compiler:
+
+```typescript
+const cardVariants = {
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.2 } },
+  exit: { opacity: 0, transition: { duration: 0.15 } },
+}
+```
+
+`<AnimatePresence>` wraps the grid's `{agents.map(...)}` children. Each `<AgentCard>` uses `key={agent.name}` — stable across re-renders — so React's reconciler can signal Framer Motion when a card is genuinely unmounting rather than re-rendering.
+
+### Elapsed time — `useEffect` + `sinceRef` pattern (AC2)
+
+```typescript
+const sinceRef = useRef(agent.since)
+sinceRef.current = agent.since   // always current without triggering the effect
+
+useEffect(() => {
+  const id = setInterval(() => {
+    setElapsed(formatElapsed(sinceRef.current))
+  }, 10_000)
+  return () => clearInterval(id)
+}, [])   // empty deps — interval set once; reads current since via ref
+```
+
+A second `useEffect` on `[agent.since]` fires an immediate recalculation when the TanStack Query cache delivers a new `since` value (e.g. when a new task starts). The ref pattern avoids recreating the interval on every cache update.
+
+### `DrawerContext` — `src/context/DrawerContext.tsx` (AC5)
+
+`DrawerProvider` holds `open: boolean` and `agentName: string | null` in React state. `openDrawer(name)` sets both; `closeDrawer()` resets both. `useDrawer()` exposes the full `DrawerState` and throws if called outside the provider. T28 will render `<AgentLogDrawer />` inside `DrawerProvider` and call `openDrawer` via the context.
+
+### `StuckAlert` — `src/components/StuckAlert.tsx` (AC6)
+
+`<FleetView>` queries `queryClient.getQueryData(['stuck', agentName])` for each agent. Any non-null result renders a `<StuckAlert agentName={a.name} message={data?.message} />` above the grid. The alert uses inline styles with `--color-text-dim` for dark-mode compatibility (no Tailwind class overrides the custom property in `.dark`).
+
+### Test coverage
+
+`src/components/FleetView.test.tsx` — 6 tests in `describe('FleetView')`:
+
+| Test | AC | Assertion |
+|---|---|---|
+| Renders one AgentCard per agent in a CSS grid | AC1 | `data-testid="fleet-grid"` present; 3 `data-testid="agent-card"` elements |
+| Agent card shows agent name and elapsed time | AC2 | 3 names in `[data-testid="agent-name"]`; 3 `[data-testid="elapsed"]` non-null |
+| `status=stuck` renders ring with colour `#dc2626` | AC3 | stuck card's `[data-ring-color]` dataset equals `#dc2626` |
+| `StuckAlert` renders when stuck cache data present | AC6 | `qc.setQueryData(['stuck','agent-qa'], …)`; `data-testid="stuck-alert"` count = 1 |
+| No `StuckAlert` when no stuck data | AC6 | no `setQueryData` call; `data-testid="stuck-alert"` count = 0 |
+| Elapsed time updates after 10 s | AC7 | `jest.advanceTimersByTime(10_001)` inside `act`; elapsed text differs before/after |
+
+The test file installs its own `requestAnimationFrame` / `cancelAnimationFrame` stubs at module scope rather than extending `test-setup.ts`, keeping the Framer Motion dependency scoped to this file.
+
+### AC → verification mapping
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `bun test supervisor/console-v2/` — `describe('FleetView')` — 3 agents → 3 cards in `fleet-grid` | done_check |
+| AC2 | `bun test supervisor/console-v2/` — agent card shows name + non-null elapsed time | done_check |
+| AC3 | `bun test supervisor/console-v2/` — `status=stuck` → `data-ring-color="#dc2626"` | done_check |
+| AC4 | PR review — add new agent; confirm card enters with fade-slide; remove agent; confirm card fades out | human-verify |
+| AC5 | PR review — click card; confirm `DrawerContext.open` becomes `true` (T28 drawer wires in next) | human-verify |
+| AC6 | `bun test supervisor/console-v2/` — `['stuck', 'agent-qa']` data set → `StuckAlert` renders; absent → no alert | done_check |
+| AC7 | `bun test supervisor/console-v2/` — `jest.advanceTimersByTime(10_001)` → elapsed text changes | done_check |
 
 ---
 

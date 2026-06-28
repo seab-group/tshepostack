@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### FleetView — agent cards with Framer Motion status ring (T27)
+
+Fleet Console v2 now shows every agent as a live card in a responsive grid. Each card displays the agent's avatar, name, current task, active tool, elapsed time (updating every 10 s), and a colour-coded status ring: green for active agents, amber for paused, red for stuck, grey for stopped. Active agents pulse their ring with a 2 s scale animation. Cards slide in on arrival and fade out on removal. When any agent enters the stuck state, a red alert banner appears above the grid. Clicking a card prepares the drawer context for the log viewer arriving in T28.
+
+#### Added
+- `src/types/fleet.ts` — `AgentInfo` interface (`name`, `task`, `tool`, `summary`, `status`, `since`) and `AgentStatusValue` union type; shared by `FleetView`, `AgentCard`, and tests (T27).
+- `src/context/DrawerContext.tsx` — `DrawerProvider` + `useDrawer()` context; holds `open` and `agentName` state; `openDrawer(name)` and `closeDrawer()` actions; T28 will render `<AgentLogDrawer />` inside this provider (T27 AC5).
+- `src/components/FleetView.tsx` — `<FleetView agents={AgentInfo[]} />`; CSS grid (`repeat(auto-fill, minmax(280px, 1fr))`); `<StuckAlert />` per stuck agent above the grid; `<AnimatePresence>` over the card list with agent name as key (T27 AC1/AC3/AC6).
+- `src/components/AgentCard.tsx` — per-card `useQuery(['fleet', name])` subscriber; `RING_COLORS` map; `cardVariants` enter (200 ms) / exit (150 ms); `ringPulse` variant active-only; `setInterval(10_000)` elapsed timer via `sinceRef` to avoid stale closure; `data-ring-color` attribute for test assertions (T27 AC2/AC3/AC4).
+- `src/components/StuckAlert.tsx` — `role="alert"` banner with red border and inline SVG warning icon; renders `agentName` and optional `message` string; CSS custom-property colours for dark-mode compatibility (T27 AC6).
+- `src/components/FleetView.test.tsx` — 6 Vitest tests: grid renders N cards for N agents (AC1); card shows name and elapsed time (AC2); stuck ring colour is `#dc2626` (AC3); `StuckAlert` appears/absent based on `['stuck', name]` cache entry (AC6); elapsed text changes after `jest.advanceTimersByTime(10_001)` (AC7) (T27 AC1–AC3/AC6/AC7).
+
 ### v2 SSE hook — useFleetStream + TanStack Query cache integration (T26)
 
 Fleet Console v2 now receives live server events without each component opening its own connection. `useFleetStream()` maintains a single `EventSource('/api/events')` across all consumers: the first component to mount opens it, the last to unmount closes it. Reconnects use exponential backoff (1s → 2s → 4s → ... → 30s) and reset on recovery. Every incoming event is pushed directly into TanStack Query's cache so fleet status, queue, and stuck-agent data update immediately with no additional network round-trip.
