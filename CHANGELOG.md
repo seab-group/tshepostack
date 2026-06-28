@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Server startup crash fixed — complete server-utils.ts import block restored (BUG-3)
+
+The console server crashed immediately on startup because `defaultWorkspacesPath` and 16 other symbols from `server-utils.ts` were missing from the import block. Every endpoint handler that called `bootstrapWorkspace`, `computeCostData`, `readTrustLedger`, or any of the other absent functions would also crash on first invocation. The full import block is now restored: 17 named exports and 3 type imports re-added. All 23 qa-smoke.sh assertions pass.
+
+#### Fixed
+- `server.ts` import block: `defaultWorkspacesPath`, `bootstrapWorkspace`, `makeRateLimiter`, `readAndValidatePostBody`, `readPidFile`, `defaultIsProcessAlive`, `defaultKillFn`, `stopProcess`, `readLogTail`, `computeStuckSignals`, `computeCostData`, `readWorkspaceRegistry`, `writeWorkspaceRegistry`, `readTrustLedger`, `writeTrustLedger`, `defaultTrustPath`, `purgeStaleDecisionFiles` re-added as named imports from `server-utils.ts` (BUG-3).
+- `server.ts` type imports: `CostResponse`, `Workspace`, `TrustRule` re-added from `server-utils.ts` (BUG-3).
+
 ### Dark mode — Tailwind v4 `.dark` variant + system preference sync (T36)
 
 Fleet Console v2 ships with a complete dark mode implementation. Light colours become the default; the slate-900 dark palette activates when the `dark` class appears on `<html>`. The toggle button in the app header switches modes and saves the preference to `localStorage`. On first load, an inline script applies the correct class before React hydrates — no flash of the wrong colour scheme. When the preference is set to `system` (the default), the app tracks OS dark-mode changes live via `matchMedia`.
