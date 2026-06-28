@@ -2345,9 +2345,13 @@ describe("log n=0", () => {
 
 describe("POST /api/draft-decision", () => {
   test("AC1: appends correct mailbox block to {controlDir}/mailboxes/{agentName}.md", async () => {
-    capturedGitArgs = null;
-    gitShouldFail = false;
-    const mailboxFile = join(draftMailboxDir, "agent-be.md");
+    t15aTaskFailCalls = [];
+    t15aSpawnCalls = [];
+    t15aMockTaskFailCode = 0;
+    writeFileSync(
+      join(t15aLedgerDir, "TASK-001.task"),
+      "id: TASK-001\nclaimed_by: agent-be\nstatus: in_progress\n",
+    );
 
     const r = await fetch(`http://127.0.0.1:${T15A_PORT}/api/fleet/restart?agent=agent-be`, { method: "POST" });
     expect(r.status).toBe(200);
