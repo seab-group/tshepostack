@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
-### Fixed
+### v2 server routing — serve console-v2/dist at /v2 + dev proxy (T25)
 
-- **BUG-5** — `console-v2/vite.config.ts`: added `base: '/v2/'` so built assets load from `/v2/assets/...` instead of `/assets/...`. Without this, the React app rendered blank at `/v2/` because asset requests 404'd under the T25 server routing.
+Fleet Console v2 is now served by the existing console server. `GET /v2/` and all sub-paths return the built React app from `supervisor/console-v2/dist/`. Deep routes return `index.html` so React Router handles them client-side. In development, the same paths proxy transparently to the Vite dev server on port 5173 — no separate URL to manage. The v1 console at `GET /` is untouched.
+
+#### Added
+- `server-utils.ts` — `makeV2Handler(v2DistDir)` factory: production SPA serving with asset MIME dispatch, path traversal guard, and 503 when the build is missing; dev-mode `node:http` proxy to Vite at `localhost:5173` stripping the `/v2` prefix (T25 AC1/AC2/AC3/AC4/AC6).
+- `server.ts` — `GET /v2*` route wired before the static handler; `v2DistDir` and `handleV2` initialised at module scope (T25 AC1/AC5).
+- `server.test.ts` — 6 new tests covering AC1–AC3, AC5, AC6 using real `http.Server` instances against temp `dist/` fixtures (ports 7897/7898) (T25 done_check).
 
 ### Keyboard shortcuts — global shortcut map + ⌘? help overlay (T37)
 
