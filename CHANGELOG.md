@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Trust rules UI + bash wrapper auto-decision (T22)
+
+The console Queue tab now has a Trust rules section at the bottom. Operators can add permanent approve/reject rules for each agent-and-pattern pair — the bash wrapper resolves matching commands immediately without showing a request card or waiting for human input. Revoked rules are faded out in 300ms and deleted from the ledger. The "Add rule" inline form populates its agent dropdown from the live fleet list, so it stays correct across workspace switches.
+
+On the server side, a new decisions directory watcher broadcasts the `approval` SSE event for new request files but silently skips any file where `auto: true` — the signal written by the wrapper on a trust-resolved command. This prevents a trust-approved command from appearing as a pending approval card in the Queue tab after the fact.
+
+#### Added
+- `<section id="section-trust" hidden>` in `index.html` — Trust rules panel inside the Queue tab with `#trust-rules` container, `#trust-add-form` (agent select, pattern input, approve/reject radio), and `#trust-add-btn` "Add rule" button; Queue tab `aria-controls` updated to include `section-trust` (T22 AC1–AC5).
+- `fetchTrust()`, `syncTrustState()`, `renderTrustRules()`, `buildTrustRuleRow()`, `populateTrustAgentSelect()` in `console.js` — Trust rules UI lifecycle; `syncTrustState()` hides the section when `trustRules.length === 0 && !trustFormOpen` (AC4); Revoke calls `DELETE /api/trust/{id}` with path param (T22-amended fix) and applies 300ms `exitCard` fade-out (AC2); Save POSTs to `/api/trust` and appends the new row immediately (AC3) (T22 AC1–AC4).
+- Trust rule CSS in `styles.css` — `.trust-rule-row`, `.trust-rule-agent`, `.trust-rule-pattern`, `.trust-action-approve` (green badge), `.trust-action-reject` (red badge), `.btn-trust-revoke` (hover red), `.trust-add-form:not([hidden])` (`:not([hidden])` prevents `display:flex` from overriding the UA `[hidden]` rule), `.trust-form-row/label/select/input`, `.trust-radio-label`, `.btn-trust-secondary`, `.btn-trust-save` (amber), `.btn-add-rule` (dashed border, full width) (T22 AC1–AC4).
+- Bash wrapper (`bin/bash`) now writes `{ "approved": true, "auto": true }` or `{ "approved": false, "auto": true }` to `$SUPERVISOR_DECISIONS_DIR/${AGENT}-${REQUEST_ID}.decision.json` on trust match, and logs `[trust] auto-approved: {cmd}` or `[trust] auto-rejected: {cmd}` to stderr — no request file is ever written for trust-matched commands (T22 AC6/AC7).
+- `makeDecisionsWatchHandler(decisionsDir, broadcastFn)` in `server-utils.ts` — watches `SUPERVISOR_DECISIONS_DIR`; on any `.json` change: reads file, skips if `parsedFile.auto === true` (trust-resolved, AC8), skips `.decision.json` response files, broadcasts `event: approval\ndata: {payload}\n\n` for new request files (T22 AC8).
+- Decisions watcher in `server.ts` — `watch(decisionsWatchDir, makeDecisionsWatchHandler(...))` at startup when `SUPERVISOR_DECISIONS_DIR` env var is set (T22 AC8).
+- 5 new tests in `describe("makeDecisionsWatchHandler (AC8)")` in `server.test.ts` — auto:true decision file skipped, human .decision.json skipped, request .json broadcasts, non-.json skipped, unreadable .json skipped (T22 AC8).
+- T22 AC6/AC7 bash wrapper tests in `bash-wrapper.test.sh` — approve rule: exit 0, no request file, decision file `{approved:True,auto:True}`, stderr `[trust] auto-approved:`; reject rule: exit 1, no request file, decision file `{approved:False,auto:True}`, stderr `[trust] auto-rejected:`.
+- 4 new assertions in `qa-smoke.sh` — POST /api/trust returns `rule` key; GET /api/trust returns `rules` key; `index.html` contains `id="section-trust"` and `id="trust-rules"` — bringing the total to 30 checks (T22 AC1).
+- 161 total tests (2 bash-wrapper + 159 server).
+
+#### Fixed
+- T19 cost test server port moved from 7890 to 7899 to avoid collision with T21 trust ledger tests on port 7890.
+
 ### Cost tab UI — per-agent cost table with live SSE refresh (T20)
 
 The Cost tab now shows a real breakdown table. On first activation the console fetches `GET /api/cost` and renders one row per agent — Agent name, Tokens In, Tokens Out, Cost (USD) — plus a bold Total footer row. Cost values are formatted to four decimal places (`$0.0042`); token counts use thousands separators. A "Last updated: Xs ago" line below the table reads the `cachedAt` field from the server response. When a `fleet-update` SSE event arrives while the Cost tab is active, the table refreshes automatically, throttled to at most one fetch every 30 seconds. When no agents have emitted cost events yet, the table body shows a single centered message instead of an empty grid.
