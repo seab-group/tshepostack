@@ -30,25 +30,23 @@ import {
   readApprovals,
   defaultWorkspacesPath,
   bootstrapWorkspace,
+  readWorkspaceRegistry,
+  writeWorkspaceRegistry,
+  defaultTrustPath,
+  readTrustLedger,
+  writeTrustLedger,
+  computeCostData,
+  readAndValidatePostBody,
+  readLogTail,
   makeRateLimiter,
   computeStuckSignals,
-  readLogTail,
-  readAndValidatePostBody,
   purgeStaleDecisionFiles,
   stopProcess,
   readPidFile,
-  readTrustLedger,
-  writeTrustLedger,
-  defaultTrustPath,
-  computeCostData,
-  readWorkspaceRegistry,
-  writeWorkspaceRegistry,
+  defaultIsProcessAlive,
+  defaultKillFn,
 } from "./server-utils.ts";
-import type {
-  CostResponse,
-  TrustRule,
-  Workspace,
-} from "./server-utils.ts";
+import type { TrustRule, TrustLedger, CostResponse, Workspace } from "./server-utils.ts";
 
 // Validate PORT early — before any filesystem reads (AC5: exit 1 before bind).
 const PORT = (() => {
