@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### QueueView — approval cards + attention cards with Radix UI animations (T29)
+
+Fleet Console v2 now has a working Queue tab. Pending bash-wrapper commands appear as approval cards: click to expand the full command, then Approve or Reject. Tasks needing human unblock appear as attention cards with the full mailbox note and an inline reply textarea. Approved, rejected, or unblocked items animate out at 300 ms as soon as the server confirms or a `resolve` SSE event arrives — whichever comes first. The tab badge keeps a live count of all pending items combined.
+
+#### Added
+- `src/types/queue.ts` — `ApprovalItem`, `AttentionItem`, and `QueueData` interfaces; shared between `QueueView.tsx` and tests (T29).
+- `src/components/QueueView.tsx` — `<QueueView />` fetches `GET /api/queue`; renders "Pending approvals" and "Needs attention" sections; approval cards use `@radix-ui/react-accordion` (`type="single"`) wrapped in Framer Motion `<motion.div layout exit>` for height-to-zero removal; attention cards show task ID pill, agent name, full mailbox note, and expandable unblock textarea; `sendDecision()` POSTs to `/api/decision` and marks the card resolved on success; `resolve` SSE events via `useFleetStream` trigger immediate card removal (T29 AC1–AC7).
+- `src/components/QueueView.test.tsx` — 8 Vitest tests (7 distinct behaviours + AC8 covered by the others): sections render with correct counts; accordion expands/collapses one at a time; Approve fires `{ action:'approve' }` POST; Reject fires `{ action:'reject' }` POST; resolve SSE removes card from DOM; attention card shows all required fields; Unblock submit fires `{ action:'unblock', text }` POST; resolve SSE decrements total badge (T29 AC1–AC8).
+- `@radix-ui/react-accordion@^1.2.0` dependency added to `console-v2/package.json` (T29 AC2).
+- `src/hooks/useFleetStream.ts` extended with `resolve` event type — adds `{ type: 'resolve'; id: string }` to `FleetEvent` union; `resolve` listener calls `invalidateQueries(['queue'])` and notifies all consumers (T29 AC4/AC7).
+- `src/test-setup.ts` extended with `getComputedStyle`, `CustomEvent`, `requestAnimationFrame`, and `cancelAnimationFrame` global stubs required by Radix UI Accordion and Framer Motion in jsdom (T29 AC1).
+
+### FleetView — agent cards with Framer Motion status ring (T27)
+
+Fleet Console v2 now shows every agent as a live card in a responsive grid. Each card displays the agent's avatar, name, current task, active tool, elapsed time (updating every 10 s), and a colour-coded status ring: green for active agents, amber for paused, red for stuck, grey for stopped. Active agents pulse their ring with a 2 s scale animation. Cards slide in on arrival and fade out on removal. When any agent enters the stuck state, a red alert banner appears above the grid. Clicking a card prepares the drawer context for the log viewer arriving in T28.
+
+#### Added
+- `src/types/fleet.ts` — `AgentInfo` interface (`name`, `task`, `tool`, `summary`, `status`, `since`) and `AgentStatusValue` union type; shared by `FleetView`, `AgentCard`, and tests (T27).
+- `src/context/DrawerContext.tsx` — `DrawerProvider` + `useDrawer()` context; holds `open` and `agentName` state; `openDrawer(name)` and `closeDrawer()` actions; T28 will render `<AgentLogDrawer />` inside this provider (T27 AC5).
+- `src/components/FleetView.tsx` — `<FleetView agents={AgentInfo[]} />`; CSS grid (`repeat(auto-fill, minmax(280px, 1fr))`); `<StuckAlert />` per stuck agent above the grid; `<AnimatePresence>` over the card list with agent name as key (T27 AC1/AC3/AC6).
+- `src/components/AgentCard.tsx` — per-card `useQuery(['fleet', name])` subscriber; `RING_COLORS` map; `cardVariants` enter (200 ms) / exit (150 ms); `ringPulse` variant active-only; `setInterval(10_000)` elapsed timer via `sinceRef` to avoid stale closure; `data-ring-color` attribute for test assertions (T27 AC2/AC3/AC4).
+- `src/components/StuckAlert.tsx` — `role="alert"` banner with red border and inline SVG warning icon; renders `agentName` and optional `message` string; CSS custom-property colours for dark-mode compatibility (T27 AC6).
+- `src/components/FleetView.test.tsx` — 6 Vitest tests: grid renders N cards for N agents (AC1); card shows name and elapsed time (AC2); stuck ring colour is `#dc2626` (AC3); `StuckAlert` appears/absent based on `['stuck', name]` cache entry (AC6); elapsed text changes after `jest.advanceTimersByTime(10_001)` (AC7) (T27 AC1–AC3/AC6/AC7).
+
 ### v2 SSE hook — useFleetStream + TanStack Query cache integration (T26)
 
 Fleet Console v2 now receives live server events without each component opening its own connection. `useFleetStream()` maintains a single `EventSource('/api/events')` across all consumers: the first component to mount opens it, the last to unmount closes it. Reconnects use exponential backoff (1s → 2s → 4s → ... → 30s) and reset on recovery. Every incoming event is pushed directly into TanStack Query's cache so fleet status, queue, and stuck-agent data update immediately with no additional network round-trip.
