@@ -5,6 +5,7 @@ const FLEET_URL = '/api/fleet';
 const QUEUE_URL = '/api/queue';
 const PIPELINE_URL = '/api/pipeline';
 const STUCK_URL = '/api/stuck';
+const COST_URL = '/api/cost';
 const RECONNECT_DELAY_MS = 3000;
 const FLEET_STALE_MS = 30000;
 const DOMAIN_FILTER_KEY = 'console-pipeline-domain-filter';
@@ -40,6 +41,8 @@ let approvalCount = 0;
 let pipelineData = [];
 let pipelineDomainFilter = localStorage.getItem(DOMAIN_FILTER_KEY) || 'all';
 let pipelineBootstrapped = false;
+let lastCostFetch = 0;
+let costBootstrapped = false;
 
 /* T15: stuck agent state */
 const stuckAgents = new Map(); // agent → { agent, signal, detail, since }
@@ -104,6 +107,10 @@ function switchTab(name) {
   /* Cost panel */
   if (name === 'cost') {
     sectionCost.removeAttribute('hidden');
+    if (!costBootstrapped) {
+      costBootstrapped = true;
+      fetchCost();
+    }
   } else {
     sectionCost.setAttribute('hidden', '');
   }
@@ -565,6 +572,57 @@ async function openSpecPanel(taskId) {
   }
 })();
 
+/* ── Cost (T20) ── */
+
+async function fetchCost() {
+  lastCostFetch = Date.now();
+  try {
+    const res = await fetch(COST_URL);
+    if (!res.ok) return;
+    const data = await res.json();
+    renderCost(data);
+  } catch (_) {}
+}
+
+function renderCost(data) {
+  const tbody = $('cost-tbody');
+  const tfoot = $('cost-tfoot');
+  const lastUpdatedEl = $('cost-last-updated');
+  if (!tbody || !tfoot || !lastUpdatedEl) return;
+
+  const fmtCost = new Intl.NumberFormat('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  const fmtTokens = new Intl.NumberFormat('en-US');
+
+  if (!data.agents || data.agents.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="cost-empty">No cost data yet — agents emit cost events as they run.</td></tr>';
+    tfoot.innerHTML = '';
+    lastUpdatedEl.textContent = '';
+    return;
+  }
+
+  tbody.innerHTML = data.agents.map((row) =>
+    `<tr>
+      <td>${esc(row.agent)}</td>
+      <td class="cost-num">${fmtTokens.format(row.tokens_in)}</td>
+      <td class="cost-num">${fmtTokens.format(row.tokens_out)}</td>
+      <td class="cost-num">$${fmtCost.format(row.cost_usd)}</td>
+    </tr>`
+  ).join('');
+
+  const t = data.total;
+  tfoot.innerHTML = `<tr class="cost-total">
+    <td><strong>Total</strong></td>
+    <td class="cost-num">${fmtTokens.format(t.tokens_in)}</td>
+    <td class="cost-num">${fmtTokens.format(t.tokens_out)}</td>
+    <td class="cost-num">$${fmtCost.format(t.cost_usd)}</td>
+  </tr>`;
+
+  if (data.cachedAt) {
+    const ago = Math.round((Date.now() - new Date(data.cachedAt).getTime()) / 1000);
+    lastUpdatedEl.textContent = `Last updated: ${ago}s ago`;
+  }
+}
+
 /* ── Trust rules (T22 AC1–AC5) ── */
 
 async function fetchTrust() {
@@ -1012,6 +1070,11 @@ function connect() {
         if (movedOn || stopped) dismissStuckAgent(ev.agent);
       } else if (ev.agent && ev.task !== undefined) {
         agentLastTaskId.set(ev.agent, ev.task);
+      }
+
+      /* T20 AC4: refresh cost table when Cost tab active, debounced 30s */
+      if (currentTab === 'cost' && Date.now() - lastCostFetch >= 30000) {
+        fetchCost();
       }
     }
   });
