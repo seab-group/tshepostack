@@ -2749,7 +2749,8 @@ function makeTrustHandler(opts: {
     }
 
     if (path.startsWith("/api/trust/") && method === "DELETE") {
-      const ruleId = path.slice("/api/trust/".length).split("/")[0];
+      const ruleId = path.split('/').at(-1);
+      if (!ruleId || !/^[a-f0-9-]{36}$/.test(ruleId)) { sendJson(res, { error: "bad request" }, 400); return; }
       const ledger = readTrustLedger(opts.trustPath);
       const idx = ledger.rules.findIndex((r) => r.id === ruleId);
       if (idx === -1) { sendJson(res, { error: "not found" }, 404); return; }
@@ -2860,22 +2861,49 @@ describe("POST /api/trust (AC2)", () => {
 });
 
 describe("DELETE /api/trust/:id (AC3)", () => {
+  const VALID_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+  const UNKNOWN_UUID = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+
   test("existing rule → 204 and rule removed from file", async () => {
     const ledger: TrustLedger = {
       rules: [
-        { id: "del-r1", agent: "agent-be", pattern: "bun test", action: "approve", createdAt: "2026-01-01T00:00:00Z" },
+        { id: VALID_UUID, agent: "agent-be", pattern: "bun test", action: "approve", createdAt: "2026-01-01T00:00:00Z" },
       ],
     };
     writeTrustLedger(t21TrustPath, ledger);
-    const r = await fetch(`http://127.0.0.1:${T21_PORT}/api/trust/del-r1`, { method: "DELETE" });
+    const r = await fetch(`http://127.0.0.1:${T21_PORT}/api/trust/${VALID_UUID}`, { method: "DELETE" });
     expect(r.status).toBe(204);
     const saved = readTrustLedger(t21TrustPath);
     expect(saved.rules).toHaveLength(0);
   });
 
   test("unknown id → 404", async () => {
-    const r = await fetch(`http://127.0.0.1:${T21_PORT}/api/trust/nonexistent-id`, { method: "DELETE" });
+    if (existsSync(t21TrustPath)) unlinkSync(t21TrustPath);
+    const r = await fetch(`http://127.0.0.1:${T21_PORT}/api/trust/${UNKNOWN_UUID}`, { method: "DELETE" });
     expect(r.status).toBe(404);
+  });
+});
+
+// T22-amended AC2: DELETE reads id from path param (not query string), validates UUID format.
+describe("DELETE /api/trust path param", () => {
+  const VALID_UUID = "b2c3d4e5-f6a7-8901-bcde-f01234567890";
+
+  test("valid UUID in path → 204 and rule removed", async () => {
+    const ledger: TrustLedger = {
+      rules: [
+        { id: VALID_UUID, agent: "agent-be", pattern: "bun run build", action: "approve", createdAt: "2026-01-01T00:00:00Z" },
+      ],
+    };
+    writeTrustLedger(t21TrustPath, ledger);
+    const r = await fetch(`http://127.0.0.1:${T21_PORT}/api/trust/${VALID_UUID}`, { method: "DELETE" });
+    expect(r.status).toBe(204);
+    const saved = readTrustLedger(t21TrustPath);
+    expect(saved.rules).toHaveLength(0);
+  });
+
+  test("malformed id (non-UUID) → 400", async () => {
+    const r = await fetch(`http://127.0.0.1:${T21_PORT}/api/trust/not-a-uuid`, { method: "DELETE" });
+    expect(r.status).toBe(400);
   });
 });
 
