@@ -28,7 +28,26 @@ import {
   gitCommitAndPush,
   resolvePort,
   readApprovals,
-  resolveControlDir,
+  defaultWorkspacesPath,
+  bootstrapWorkspace,
+  makeRateLimiter,
+  computeStuckSignals,
+  readLogTail,
+  readAndValidatePostBody,
+  purgeStaleDecisionFiles,
+  stopProcess,
+  readPidFile,
+  readTrustLedger,
+  writeTrustLedger,
+  defaultTrustPath,
+  computeCostData,
+  readWorkspaceRegistry,
+  writeWorkspaceRegistry,
+} from "./server-utils.ts";
+import type {
+  CostResponse,
+  TrustRule,
+  Workspace,
 } from "./server-utils.ts";
 
 // Validate PORT early — before any filesystem reads (AC5: exit 1 before bind).

@@ -172,9 +172,21 @@
 
   </div>
 
-  <!-- ── Cost tab panel (placeholder) ── -->
+  <!-- ── Cost tab panel ── -->
   <div id="section-cost" role="tabpanel" aria-labelledby="tab-cost" class="tab-panel" hidden>
-    <div class="cost-placeholder">Cost view — coming soon</div>
+    <table class="cost-table" id="cost-table">
+      <thead>
+        <tr>
+          <th>Agent</th>
+          <th class="cost-num">Tokens In</th>
+          <th class="cost-num">Tokens Out</th>
+          <th class="cost-num">Cost (USD)</th>
+        </tr>
+      </thead>
+      <tbody id="cost-tbody"></tbody>
+      <tfoot id="cost-tfoot"></tfoot>
+    </table>
+    <p id="cost-last-updated" class="cost-last-updated"></p>
   </div>
 
 </div><!-- /page-body -->
