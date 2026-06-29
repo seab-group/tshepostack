@@ -15,3 +15,22 @@ Object.defineProperty(globalThis, 'Text', { value: dom.window.Text, writable: tr
 Object.defineProperty(globalThis, 'Comment', { value: dom.window.Comment, writable: true })
 Object.defineProperty(globalThis, 'DocumentFragment', { value: dom.window.DocumentFragment, writable: true })
 Object.defineProperty(globalThis, 'MutationObserver', { value: dom.window.MutationObserver, writable: true })
+Object.defineProperty(globalThis, 'getComputedStyle', { value: dom.window.getComputedStyle.bind(dom.window), writable: true })
+Object.defineProperty(globalThis, 'CustomEvent', { value: dom.window.CustomEvent, writable: true })
+
+// requestAnimationFrame: fire via Promise microtask so animations complete inside `act()`
+let _rafId = 0
+Object.defineProperty(globalThis, 'requestAnimationFrame', {
+  value: (cb: FrameRequestCallback): number => {
+    const id = ++_rafId
+    Promise.resolve().then(() => cb(0))
+    return id
+  },
+  writable: true,
+  configurable: true,
+})
+Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+  value: (_id: number) => {},
+  writable: true,
+  configurable: true,
+})
