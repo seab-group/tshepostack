@@ -3122,7 +3122,7 @@ T24 creates `supervisor/console-v2/` as a standalone Bun workspace — the v2 fr
 ```
 supervisor/console-v2/
 ├── package.json                    # standalone workspace; "type": "module"
-├── vite.config.ts                  # Vite 6 + @vitejs/plugin-react + @tailwindcss/vite; @ alias → src/
+├── vite.config.ts                  # Vite 6 + @vitejs/plugin-react + @tailwindcss/vite; @ alias → src/; base: '/v2/' (BUG-5)
 ├── index.html                      # Vite HTML entry; mounts React at <div id="root">
 ├── components.json                 # shadcn/ui: style=base-nova, baseColor=slate, CSS vars on
 ├── bunfig.toml                     # [test] environment = "jsdom"
