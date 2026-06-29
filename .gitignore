@@ -40,3 +40,7 @@ docs/throughput-*.json
 
 # gbrain local source-staging dir (capability checks, source clones) — runtime artifact
 .sources/
+
+# console-v2 build artifacts — do not commit
+supervisor/console-v2/dist/
+supervisor/console-v2/node_modules/
