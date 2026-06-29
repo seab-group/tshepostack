@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fleet Console v2 — Phase A scaffold: Vite 6 + React 19 + Tailwind v4 + shadcn/ui (T24)
+
+The console is getting a complete React 19 rewrite. Phase A scaffolds `supervisor/console-v2/` as a standalone Bun workspace alongside the untouched v1.1 console — both directories coexist and share nothing. The new workspace ships with Vite 6, TypeScript, Tailwind v4 (CSS-first `@import`, no config file), shadcn/ui with the slate colour scheme and CSS variables, TanStack Query v5 wrapping the app entry point, and Framer Motion v11 animating the "coming soon" placeholder. Design tokens from `console/styles.css` are ported to a `@theme` block in `tokens.css` and extended with motion easing values. A Vitest renders-without-crashing test confirms the full stack wires together under `bun test supervisor/console-v2/`. Feature code and server integration follow in Phase B (T25).
+
+#### Added
+- `supervisor/console-v2/` — standalone Bun workspace with Vite 6, React 19, TypeScript, Tailwind v4 (`@tailwindcss/vite` plugin), shadcn/ui, TanStack Query v5, and Framer Motion v11. `bun install` exits 0 (T24 AC1).
+- `bun run dev --prefix supervisor/console-v2` starts Vite dev server on port 5173 and renders "Fleet Console v2 — coming soon" (T24 AC2).
+- `bun run build --prefix supervisor/console-v2` produces `dist/index.html` and hashed asset files (T24 AC3).
+- `src/styles/tokens.css` with `@theme` directive — colour palette (dark base/surface + amber/green/red/blue), body 16 px, 8 pt spacing grid, 6px/4px radius tokens, motion easing curves; extended from `console/styles.css` (T24 AC4).
+- shadcn/ui configured with slate base colour and CSS variable theming (`components.json` committed); `Button` component with 6 variants and 4 sizes generated in `src/components/ui/` (T24 AC5).
+- TanStack Query v5 `QueryClient` created in `src/main.tsx` and wraps `<App />` in `<QueryClientProvider>` (T24 AC6).
+- Framer Motion v11 `<motion.div>` fade-in (opacity 0→1, 0.3 s, ease-enter curve) wraps the placeholder heading in `App.tsx` (T24 AC7).
+- `src/App.test.tsx` — Vitest renders-without-crashing test; `bun test supervisor/console-v2/` exits 0 (T24 AC8).
+- `console-v2/dist/` and `console-v2/node_modules/` added to `.gitignore` (T24 constraint).
+- `supervisor/console/` server and all 181 v1.1 tests are unchanged — v2 is purely additive (T24 AC9).
+
 ### v1.1 integration test suite — workspace, cost, trust, and cross-feature tests (T23)
 
 The v1.1 feature set (workspace registry, cost tracker, and trust ledger) now has full integration test coverage. Five new describe blocks in `server.test.ts` cover all AC1–AC5 scenarios — including bash wrapper subprocess tests for trust auto-approve and auto-reject, and two cross-feature tests that verify cache invalidation and agent validation across workspace switches. A pre-existing test failure (`capturedGitArgs` orphan in draft-decision AC1) is also fixed. The `qa-smoke.sh` gains three new AC6 assertions: registering a workspace via POST, listing workspaces, and fetching cost data.
