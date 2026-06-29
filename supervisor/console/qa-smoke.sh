@@ -158,5 +158,27 @@ else
   printf '  FAIL  index.html missing trust-rules element\n' >&2; fail=$((fail + 1))
 fi
 
+# T20 AC1/AC7: index.html contains cost-table and cost-tbody elements
+if printf '%s' "${INDEX_BODY}" | grep -q 'id="cost-table"'; then
+  printf '  ok    index.html contains cost-table element\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  index.html missing cost-table element\n' >&2; fail=$((fail + 1))
+fi
+
+if printf '%s' "${INDEX_BODY}" | grep -q 'id="cost-tbody"'; then
+  printf '  ok    index.html contains cost-tbody element\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  index.html missing cost-tbody element\n' >&2; fail=$((fail + 1))
+fi
+
+# T20 AC6: GET /api/cost returns 200 with agents array
+check "GET /api/cost" "${B}/api/cost"
+COST_BODY=$(curl -sf --max-time 5 "${B}/api/cost" 2>/dev/null) || COST_BODY=""
+if printf '%s' "${COST_BODY}" | grep -q '"agents"'; then
+  printf '  ok    cost JSON contains agents key\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  cost JSON missing agents key\n' >&2; fail=$((fail + 1))
+fi
+
 printf '\n=== smoke: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [ "${fail}" -eq 0 ]
