@@ -158,5 +158,20 @@ else
   printf '  FAIL  index.html missing trust-rules element\n' >&2; fail=$((fail + 1))
 fi
 
+# T23 AC6: workspace and cost v1.1 endpoints.
+WS_BODY=$(printf '{"name":"smoke-workspace","controlDir":"%s"}' "${TMP_CONTROL}")
+WORKSPACE_RESP=$(curl -s --max-time 5 -X POST \
+  -H 'Content-Type: application/json' \
+  -d "${WS_BODY}" \
+  "${B}/api/workspaces" 2>/dev/null) || WORKSPACE_RESP=""
+if printf '%s' "${WORKSPACE_RESP}" | grep -q '"workspace"'; then
+  printf '  ok    POST /api/workspaces → workspace registered\n'; pass=$((pass + 1))
+else
+  printf '  FAIL  POST /api/workspaces → %s\n' "${WORKSPACE_RESP}" >&2; fail=$((fail + 1))
+fi
+
+check "GET /api/workspaces" "${B}/api/workspaces"
+check "GET /api/cost" "${B}/api/cost"
+
 printf '\n=== smoke: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [ "${fail}" -eq 0 ]

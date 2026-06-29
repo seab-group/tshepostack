@@ -28,8 +28,25 @@ import {
   gitCommitAndPush,
   resolvePort,
   readApprovals,
-  resolveControlDir,
+  defaultWorkspacesPath,
+  bootstrapWorkspace,
+  readWorkspaceRegistry,
+  writeWorkspaceRegistry,
+  defaultTrustPath,
+  readTrustLedger,
+  writeTrustLedger,
+  computeCostData,
+  readAndValidatePostBody,
+  readLogTail,
+  makeRateLimiter,
+  computeStuckSignals,
+  purgeStaleDecisionFiles,
+  stopProcess,
+  readPidFile,
+  defaultIsProcessAlive,
+  defaultKillFn,
 } from "./server-utils.ts";
+import type { TrustRule, TrustLedger, CostResponse, Workspace } from "./server-utils.ts";
 
 // Validate PORT early — before any filesystem reads (AC5: exit 1 before bind).
 const PORT = (() => {
@@ -621,9 +638,10 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     return;
   }
 
-  // T21: DELETE /api/trust/:id — remove rule by id; 204 on success, 404 if not found.
+  // T21/T22-amended: DELETE /api/trust/:id — path param; 204 on success, 404 if not found, 400 on malformed id.
   if (path.startsWith("/api/trust/") && method === "DELETE") {
-    const ruleId = path.slice("/api/trust/".length).split("/")[0];
+    const ruleId = path.split('/').at(-1);
+    if (!ruleId || !/^[a-f0-9-]{36}$/.test(ruleId)) { sendJson(res, { error: "bad request" }, 400); return; }
     const trustPath = defaultTrustPath();
     const ledger = readTrustLedger(trustPath);
     const idx = ledger.rules.findIndex((r) => r.id === ruleId);
