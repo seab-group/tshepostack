@@ -9,7 +9,7 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `fleet.conf` | Declare all agents in one place |
 | `install.sh` | Register an agent as a launchd (macOS) or systemd (Linux) service |
 | `wake-listen.ts` | Supabase Realtime subscriber — wakes idle agents in <1s cross-machine |
-| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE; T11: fleet control routes — POST /api/fleet/stop, /restart, /pause, /resume; T11-amended: shim removed — `validAgents` built solely from `controlDir/fleet.conf` via `rebuildValidAgents()`, called at startup and on workspace switch; T5: `handleDraftDecision` rewritten — Anthropic SDK dependency removed, endpoint now appends a timestamped human note block to the agent's mailbox file and calls `gitCommitAndPush`; T17: workspace registry endpoints — GET/POST `/api/workspaces`, DELETE `/api/workspaces/:id`, POST `/api/workspaces/:id/activate` (reloads `validAgents` from new workspace fleet.conf before SSE broadcast); startup bootstrap: `bootstrapWorkspace(controlDir, workspacesPath)` auto-registers `CONTROL_DIR` as a workspace if absent or not yet listed (AC5/AC6); T19: `GET /api/cost` — aggregates `tokens_in`, `tokens_out`, `cost_usd` per agent from `~/agents/<agent>/logs/live-events.jsonl`; 30s workspace-keyed in-memory cache (`costCache: Map<wsId, {data, expiresAt}>`); `?since=ISO` bypasses cache and computes fresh; `POST /api/workspaces/:id/activate` calls `costCache.delete(reg.activeId)` before switching; T21: trust ledger endpoints — GET `/api/trust` (returns rules or `{ rules: [] }` when file absent), POST `/api/trust` (validates agent against `validAgents`, pattern as non-empty string, action as `approve`|`reject`; appends rule via read-modify-write), DELETE `/api/trust/:id` (removes rule by id; 204 on success, 404 if not found); T22: decisions watcher — `watch(SUPERVISOR_DECISIONS_DIR, makeDecisionsWatchHandler(...))` added at startup when `SUPERVISOR_DECISIONS_DIR` is set; broadcasts `event: approval` SSE for new request files, skips files where `auto === true` (trust-auto-resolved) and skips `.decision.json` response files; T22-amended: DELETE `/api/trust/:id` uses `path.split('/').at(-1)` to extract `ruleId` (path parameter, not query string); validates UUID format `/^[a-f0-9-]{36}$/` — returns 400 `{ error: "bad request" }` for malformed ids; import block restored — 18 missing `server-utils.ts` symbols and type imports re-added, duplicate `resolveControlDir` entry removed) |
+| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE; T11: fleet control routes — POST /api/fleet/stop, /restart, /pause, /resume; T11-amended: shim removed — `validAgents` built solely from `controlDir/fleet.conf` via `rebuildValidAgents()`, called at startup and on workspace switch; T5: `handleDraftDecision` rewritten — Anthropic SDK dependency removed, endpoint now appends a timestamped human note block to the agent's mailbox file and calls `gitCommitAndPush`; T17: workspace registry endpoints — GET/POST `/api/workspaces`, DELETE `/api/workspaces/:id`, POST `/api/workspaces/:id/activate` (reloads `validAgents` from new workspace fleet.conf before SSE broadcast); startup bootstrap: `bootstrapWorkspace(controlDir, workspacesPath)` auto-registers `CONTROL_DIR` as a workspace if absent or not yet listed (AC5/AC6); T19: `GET /api/cost` — aggregates `tokens_in`, `tokens_out`, `cost_usd` per agent from `~/agents/<agent>/logs/live-events.jsonl`; 30s workspace-keyed in-memory cache (`costCache: Map<wsId, {data, expiresAt}>`); `?since=ISO` bypasses cache and computes fresh; `POST /api/workspaces/:id/activate` calls `costCache.delete(reg.activeId)` before switching; T21: trust ledger endpoints — GET `/api/trust` (returns rules or `{ rules: [] }` when file absent), POST `/api/trust` (validates agent against `validAgents`, pattern as non-empty string, action as `approve`|`reject`; appends rule via read-modify-write), DELETE `/api/trust/:id` (removes rule by id; 204 on success, 404 if not found); T22: decisions watcher — `watch(SUPERVISOR_DECISIONS_DIR, makeDecisionsWatchHandler(...))` added at startup when `SUPERVISOR_DECISIONS_DIR` is set; broadcasts `event: approval` SSE for new request files, skips files where `auto === true` (trust-auto-resolved) and skips `.decision.json` response files; T22-amended: DELETE `/api/trust/:id` uses `path.split('/').at(-1)` to extract `ruleId` (path parameter, not query string); validates UUID format `/^[a-f0-9-]{36}$/` — returns 400 `{ error: "bad request" }` for malformed ids; import block restored — 18 missing `server-utils.ts` symbols and type imports re-added, duplicate `resolveControlDir` entry removed; BUG-3: complete import block restored — 17 named imports (`defaultWorkspacesPath`, `bootstrapWorkspace`, `makeRateLimiter`, `readAndValidatePostBody`, `readPidFile`, `defaultIsProcessAlive`, `defaultKillFn`, `stopProcess`, `readLogTail`, `computeStuckSignals`, `computeCostData`, `readWorkspaceRegistry`, `writeWorkspaceRegistry`, `readTrustLedger`, `writeTrustLedger`, `defaultTrustPath`, `purgeStaleDecisionFiles`) and 3 type imports (`CostResponse`, `Workspace`, `TrustRule`) re-added; server no longer crashes at startup or on any endpoint handler that uses these symbols) |
 | `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved; T22: on approve-rule match writes `{ approved: true, auto: true }` to `$SUPERVISOR_DECISIONS_DIR/${AGENT}-${REQUEST_ID}.decision.json` and logs `[trust] auto-approved: {cmd}` to stderr; on reject-rule match writes `{ approved: false, auto: true }` and exits 1 — no request file written in either case) |
 | `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support, Pipeline tab panel with domain filter chips and spec panel; T18: workspace switcher `<details>/<summary>` pill between the page subtitle and SSE dot — dropdown lists registered workspaces with active checkmark; inline "+ Add workspace" form with Name + Control directory fields and error slot; T20: replaces `.cost-placeholder` div with `<table class="cost-table" id="cost-table">` — thead with Agent / Tokens In / Tokens Out / Cost (USD) columns, `<tbody id="cost-tbody">`, `<tfoot id="cost-tfoot">`; `<p id="cost-last-updated" class="cost-last-updated">` paragraph below the table; T22: new `<section id="section-trust" hidden>` below the approval section — `<div id="trust-rules">` for rule rows injected by console.js; `<div id="trust-add-form" hidden>` with agent `<select>`, pattern `<input type="text">`, and approve/reject `<input type="radio">`; `<button id="trust-add-btn">Add rule</button>`; Queue tab `aria-controls` updated to include `section-trust`) |
 | `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility, Pipeline tab with collapsible status groups, domain filter chips persisted in localStorage, spec panel on card click, `pipeline-update` SSE listener; T13-amended: `pipelineBootstrapped` one-shot guard on tab activate, `fetchPipeline()` called on SSE reconnect, all SSE listeners fixed from `currentEs` → `es`; T18: `workspaceRegistry` state, `fetchWorkspaces()` called on SSE connect, `renderWorkspaces()` (builds full dropdown list), `updateWorkspacePill()` (SSE-driven pill + checkmark update without rebuilding list), `activateWorkspace()` (POSTs to `/api/workspaces/:id/activate`), `initWorkspaceSwitcher()` IIFE (outside-click + Escape close, "+ Add workspace" expand, form submit with 400 error display and auto-activate on success), `workspace-switch` SSE listener; T20: `COST_URL` constant, `lastCostFetch` module-level timestamp (0 on load; set to `Date.now()` on each fetch), `costBootstrapped` flag (one-shot guard preventing re-fetch on repeated Cost tab clicks), `fetchCost()` (updates `lastCostFetch`, calls `GET /api/cost`, passes response to `renderCost()`), `renderCost(data)` (per-row `Intl.NumberFormat` for 4-dp cost and thousands-sep tokens, empty-state colspan=4 message, bold Total tfoot row, "Last updated: Xs ago" paragraph from `cachedAt`); `fleet-update` SSE handler extended: calls `fetchCost()` when `currentTab === 'cost'` and `Date.now() - lastCostFetch >= 30000`; T22: `TRUST_URL` constant; DOM refs `sectionTrust`, `trustRulesEl`, `trustAddForm`, `trustAddBtn`; state `trustRules = []`, `trustFormOpen = false`; `fetchTrust()` (GET /api/trust; sets `trustRules`; calls `renderTrustRules()`), `syncTrustState()` (shows `section-trust` when `trustRules.length > 0 || trustFormOpen`, hides otherwise — AC4), `renderTrustRules()` (rebuilds `trust-rules` div from `trustRules` array), `buildTrustRuleRow(rule)` (constructs row with agent/pattern/action badge and Revoke button; Revoke calls `DELETE /api/trust/{id}` with path param and `exitCard` 300ms fade-out), `populateTrustAgentSelect()` (fetches GET /api/fleet; populates `<select>` options from agent names — AC3); `switchTab('queue')` now calls `fetchTrust()` and hides `sectionTrust` on non-queue tabs; Add rule button shows form + hides itself; Cancel button hides form; Save button POSTs to TRUST_URL and appends new rule row without page reload) |
@@ -19,19 +19,27 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk), polling behavior (poll_approval), T21 trust ledger bash checks (AC4/AC5/AC6a/AC6b), and T22 trust auto-decision file tests (AC6: approve rule writes `{ approved:true, auto:true }` decision file, no request file, stderr `[trust] auto-approved:`; AC7: reject rule writes `{ approved:false, auto:true }` decision file, exits 1, stderr `[trust] auto-rejected:`) (v7.1) |
 | `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4), workspace registry (T17 AC1-AC7: GET/POST /api/workspaces, DELETE /api/workspaces/:id, POST /api/workspaces/:id/activate, bootstrapWorkspace AC5/AC6, validAgents reload AC7), T17a back-compat (CONTROL_DIR first boot AC1, existing registry AC2, validAgents from fleet.conf AC3, missing fleet.conf AC4), and T19 cost tracker (AC1: aggregation with known JSONL totals, AC2: 30s cache hit — second call uses cached result, AC3: cache invalidation on workspace-switch via `costInvalidateFn`, AC4: malformed `cost_usd` skipped without 500, AC5: `?since=` filter bypasses cache and returns filtered totals, AC6: no-cost-data → empty agents array), T19-amended cache contract tests (cachedAt ISO string AC1, TTL spy/hit AC2, workspace-switch invalidation AC3, since-bypass double-call AC4/AC5 — ports 7894/7895/7896), T21 trust ledger (GET AC1: 2 tests, POST AC2: 4 tests, DELETE AC3: 2 tests — port 7890), T22 decisions watcher (makeDecisionsWatchHandler AC8: 5 tests — no broadcast on auto:true decision file, no broadcast on .decision.json human file, broadcast on request .json file, no broadcast on non-.json, no broadcast on unreadable file), and T22-amended path param fix (describe("DELETE /api/trust path param") AC2: valid UUID in path → 204 + rule removed; malformed non-UUID id → 400), T23 v1.1 integration tests (workspace registry AC1: 5 tests — GET empty/POST validate/POST create UUID/DELETE shifts activeId/activate SSE — port 7875; cost tracker AC2: 5 tests — aggregation/cache-hit/cache-miss after switch/since filter/malformed skip — port 7876; trust ledger AC3: 8 tests — GET missing/GET existing/POST validate agent/POST validate action/DELETE 204/DELETE 404/bash wrapper auto-approve/auto-reject — port 7877; cross-feature AC4 workspace-cost port 7878; cross-feature AC5 workspace-validAgents port 7879; also fixes capturedGitArgs orphan in draft-decision AC1 beforeEach) (181 total: 2 bash-wrapper + 179 server) |
 | `console/qa-smoke.sh` | QA smoke test for console UI — boots server on a random free port, asserts all GET endpoints return 200, T13 AC4/AC5 (pipeline JSON + `pipeline-groups` element), T15 AC1/AC2 (stuck endpoint + `stuck-cards` element + `stuck-alert-slot` DOM order), T16 AC6/AC7 (JSON content-type headers, fleet stop mock PID), T18 AC1 (`workspace-pill` element in HTML), T17 AC1 (`GET /api/workspaces` returns 200 with `workspaces` key), T20 AC1/AC7 (`index.html` contains `cost-table` and `cost-tbody` elements), T20 AC6 (`GET /api/cost` returns 200 with `agents` key), T22 AC1 (POST /api/trust → rule returned; GET /api/trust → `rules` key present; `index.html` contains `section-trust` and `trust-rules` elements), T23 AC6 (POST /api/workspaces with smoke-workspace → `workspace` key in response; GET /api/workspaces → 200; GET /api/cost → 200) — 26 checks total (v7.1) |
-| `console-v2/package.json` | v2 frontend scaffold — standalone Bun workspace (`"type": "module"`); dependencies: `react@^19`, `react-dom@^19`, `framer-motion@^11`, `@tanstack/react-query@^5`, `shadcn@^4.12`, `tw-animate-css`, `@fontsource-variable/geist`, `@base-ui/react`; devDependencies: `vite@^6`, `@vitejs/plugin-react@^4`, `tailwindcss@^4`, `@tailwindcss/vite@^4`, `typescript@^5.5`, `vitest@^3`, `@testing-library/react@^16`, `jsdom@^25`, `class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`; scripts: `dev` (vite), `build` (tsc -b + vite build), `test` (vitest run) (T24 AC1) |
+| `console-v2/package.json` | v2 frontend scaffold — standalone Bun workspace (`"type": "module"`); dependencies: `react@^19`, `react-dom@^19`, `framer-motion@^11`, `@tanstack/react-query@^5`, `shadcn@^4.12`, `tw-animate-css`, `@fontsource-variable/geist`, `@base-ui/react`; devDependencies: `vite@^6`, `@vitejs/plugin-react@^4`, `tailwindcss@^4`, `@tailwindcss/vite@^4`, `typescript@^5.5`, `vitest@^3`, `@testing-library/react@^16`, `jsdom@^25`, `class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`; scripts: `dev` (vite), `build` (tsc -b + vite build), `test` (vitest run) (T24 AC1); T37: `zustand@^5.0.14` added — global shortcut store (`useShortcutStore`) |
 | `console-v2/vite.config.ts` | Vite 6 config — plugins: `@vitejs/plugin-react` (JSX transform) + `@tailwindcss/vite` (Tailwind v4 CSS processing); resolve alias `@` → `./src`; Vitest inline config: `environment: 'jsdom'`, `globals: true` (T24 AC1/AC8) |
-| `console-v2/index.html` | Vite HTML entry — `<div id="root">` mount point; loads `src/main.tsx` as `type="module"`; title "Fleet Console v2" (T24 AC2) |
+| `console-v2/index.html` | Vite HTML entry — `<div id="root">` mount point; loads `src/main.tsx` as `type="module"`; title "Fleet Console v2"; T36: inline `<script>` before `</head>` reads `localStorage.getItem('console-theme')` and adds `dark` class to `document.documentElement` synchronously before React hydrates — prevents flash of wrong colour scheme; condition `t !== 'light'` catches both `'system'` and absent/null so the OS preference applies when no explicit choice is stored (T24 AC2; T36 AC3/AC4) |
 | `console-v2/components.json` | shadcn/ui config generated by `bunx shadcn@latest init` — `style: "base-nova"`, `baseColor: "slate"`, `cssVariables: true`, `iconLibrary: "lucide"`, `rsc: false`, `tsx: true`; aliases: `@/components`, `@/lib/utils`, `@/components/ui`, `@/lib`, `@/hooks` (T24 AC5) |
 | `console-v2/bunfig.toml` | Bun test environment — `[test] environment = "jsdom"` (overridden per-test by `test-setup.ts` which manually binds DOM globals) (T24 AC8) |
 | `console-v2/src/main.tsx` | React 19 entry point — creates `QueryClient`, wraps `<App />` in `<QueryClientProvider client={queryClient}>` inside `React.StrictMode`; mounts to `document.getElementById('root')` (T24 AC6) |
-| `console-v2/src/App.tsx` | Phase A placeholder — flex-centred heading `"Fleet Console v2 — coming soon"` (h1, text-2xl, font-semibold) wrapped in `<motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3, ease: [0.16,1,0.3,1] }}>` — easing matches `--ease-enter` from tokens.css (T24 AC2/AC7) |
+| `console-v2/src/App.tsx` | T24: flex-centred placeholder heading with Framer Motion fade-in; T36: replaced with dark-mode shell — outer `<div>` uses `bg-[--color-base] text-[--color-text]`; `<header>` with `border-b border-[--color-border]` holds `StatusRing` (left) and `<ThemeToggle />` (right); `<main>` wraps the fade-in "Coming soon" h1; `StatusRing` is a `<motion.span>` with `ring-2 ring-current text-amber-500 dark:text-amber-400` — `ring-current` inherits `color`, so the amber pulse draws at `#fbbf24` in dark mode without a separate animation branch; T37: `useShortcuts()` mounted once at App root (single global `keydown` listener — AC4); `<ShortcutsDialog />` rendered at end of outer div so it sits above all other content in the stacking context (T24 AC2/AC7; T36 AC2/AC6; T37 AC3/AC4) |
 | `console-v2/src/index.css` | Tailwind v4 CSS-first entry — `@import "tailwindcss"` (no tailwind.config.js); imports `./styles/tokens.css`, `tw-animate-css`, `shadcn/tailwind.css`, `@fontsource-variable/geist`; `@custom-variant dark (&:is(.dark *))` for dark mode; `@theme inline` block maps shadcn CSS var names (`--background`, `--foreground`, `--primary`, etc.) to Tailwind `--color-*` and `--radius-*` tokens; `:root` and `.dark` blocks define oklch colour palette for shadcn CSS variables; `@layer base` resets: `border-border outline-ring/50` on all elements, `bg-background text-foreground` on body, `font-sans` on html (T24 AC4/AC5) |
-| `console-v2/src/styles/tokens.css` | Design tokens — `@theme` directive (Tailwind v4 CSS-first config): colour palette extended from `console/styles.css` (`--color-base: #0C0C0C`, surface/surface-2/border/text/text-dim/text-micro, amber/green/red/blue); typography (`--font-body: 'Satoshi', 'DM Sans', system-ui` at 16px, `--font-mono: 'JetBrains Mono', ui-monospace`); 8 pt spacing grid (`--spacing-1` 4px through `--spacing-8` 32px); radius (`--radius-card: 6px`, `--radius-badge: 4px`, `--radius-btn: 6px`); motion (`--ease-enter: cubic-bezier(0.16,1,0.3,1)`, `--ease-exit: cubic-bezier(0.7,0,0.84,0)`, `--duration-micro: 75ms`, `--duration-short: 150ms`, `--duration-medium: 250ms`) (T24 AC4) |
+| `console-v2/src/styles/tokens.css` | Design tokens — `@theme` directive: colour, typography, spacing, radius, and motion tokens. T24: dark-only palette in `@theme` (`--color-base: #0C0C0C`, etc.). T36: refactored to light-mode defaults in `@theme` (`--color-base: #ffffff`, `--color-surface: #f8fafc`, `--color-surface-2: #f1f5f9`, `--color-border: #e2e8f0`, `--color-text: #0f172a`, `--color-text-dim: #64748b`, `--color-text-micro: #94a3b8`) + `.dark {}` block overrides to slate-900 dark palette (`--color-base: #0f172a`, `--color-surface: #1e293b`, `--color-surface-2: #334155`, `--color-border: #475569`, `--color-text: #f8fafc`; brighter amber/green/red/blue); typography, spacing, radius, and motion tokens unchanged (T24 AC4; T36 AC1) |
 | `console-v2/src/lib/utils.ts` | `cn()` helper — `twMerge(clsx(...inputs))`; used by all shadcn components to merge Tailwind classes safely, resolving conflicts and honouring specificity (T24) |
 | `console-v2/src/components/ui/button.tsx` | shadcn Button — `cva`-based; 6 variants: `default` (bg-primary), `destructive` (bg-destructive), `outline` (border + hover:bg-accent), `secondary` (bg-secondary), `ghost` (hover:bg-accent), `link` (underline hover); 4 sizes: `default` h-10 px-4, `sm` h-9 px-3, `lg` h-11 px-8, `icon` h-10 w-10; `React.forwardRef<HTMLButtonElement, ButtonProps>` (T24 AC5) |
 | `console-v2/src/App.test.tsx` | Vitest renders-without-crashing test — imports `test-setup.ts` to initialise DOM globals; wraps `<App />` in a `<QueryClientProvider>` helper; calls `render(<App />, { wrapper })`; 1 test in `describe('App')`; passes under `bun test supervisor/console-v2/` (T24 AC8) |
-| `console-v2/src/test-setup.ts` | jsdom DOM polyfill — creates `new JSDOM(...)` with `url: 'http://localhost'`; assigns `window`, `document`, `navigator`, `HTMLElement`, `SVGElement`, `Element`, `Node`, `Text`, `Comment`, `DocumentFragment`, `MutationObserver` to `globalThis` via `Object.defineProperty`; imported as the first line of `App.test.tsx` (T24 AC8) |
+| `console-v2/src/test-setup.ts` | jsdom DOM polyfill — creates `new JSDOM(...)` with `url: 'http://localhost'`; assigns `window`, `document`, `navigator`, `HTMLElement`, `SVGElement`, `Element`, `Node`, `Text`, `Comment`, `DocumentFragment`, `MutationObserver` to `globalThis` via `Object.defineProperty`; T36: also sets `localStorage` (from `dom.window.localStorage`) and installs a default `matchMedia` stub (`matches: false`, no-op `addEventListener`/`removeEventListener`) on both `globalThis` and `dom.window` — individual theme tests override it per-test with `Object.defineProperty(window, 'matchMedia', { configurable: true, ... })`; T37: adds `Event` and `KeyboardEvent` polyfills from `dom.window` — required for `new KeyboardEvent('keydown', ...)` constructor calls in `shortcuts.test.tsx` (T24 AC8; T36 AC2–AC5; T37 AC1/AC2/AC5) |
+| `console-v2/src/lib/theme.ts` | Theme utility module (T36) — `Theme` type (`'light' \| 'dark' \| 'system'`); `THEME_KEY = 'console-theme'`; `getStoredTheme()` reads `localStorage.getItem(THEME_KEY)`, returns `'system'` on error or missing; `isDarkPreferred()` returns `window.matchMedia('(prefers-color-scheme: dark)').matches`; `applyTheme(theme)` calls `document.documentElement.classList.toggle('dark', dark)`; `persistTheme(theme)` writes to `localStorage` (T36 AC2–AC5) |
+| `console-v2/src/hooks/useTheme.ts` | `useTheme()` React hook (T36) — initialises from `getStoredTheme()` as lazy `useState` initialiser; `useEffect` registers `mq.addEventListener('change', handler)` where `handler` calls `applyTheme('system')` only when stored theme is `'system'` (explicit preferences are immune to OS changes); `toggle()` reads `html.classList.contains('dark')`, sets the opposite explicit value via `persistTheme` + `applyTheme`, updates React state; returns `{ theme, toggle, isDark }` where `isDark = theme === 'dark' \|\| (theme === 'system' && isDarkPreferred())` (T36 AC2/AC4/AC5) |
+| `console-v2/src/components/ThemeToggle.tsx` | Theme toggle button (T36) — `<Button variant="ghost" size="icon" aria-label="Toggle theme">`; renders `<Sun className="h-4 w-4" />` when dark, `<Moon className="h-4 w-4" />` when light (lucide-react); calls `toggle()` from `useTheme`; placed in the App header, right-aligned (T36 AC2) |
+| `console-v2/src/theme.test.tsx` | 9 dark-mode Vitest tests (T36) — `describe('dark mode')`: `setupMatchMedia(initialMatches)` helper installs a mock with a `trigger(matches)` method that fires registered `change` listeners; `beforeEach` clears `localStorage` and removes `html.dark`; tests: AC3 (system dark/light → class applied/absent), AC4 (explicit light overrides dark system; explicit dark overrides light system), AC2 (toggle L→D saves `'dark'` to localStorage; toggle D→L saves `'light'`), AC5 (matchMedia `change` to dark/light updates class when `theme=system`; does NOT update when explicit theme set); components wrapped in `<QueryClientProvider>` (T36 AC2–AC5) |
+| `console-v2/src/store/shortcutStore.ts` | Zustand store for keyboard shortcuts (T37) — `Tab` type (`'fleet' \| 'queue' \| 'pipeline' \| 'cost' \| 'trust'`); `ShortcutStore` interface: `paletteOpen`, `activeTab`, `activeDrawer`, `helpOpen`, plus actions `openPalette()`, `closePalette()`, `navigateTo(tab)`, `closeActive()`, `toggleHelp()`; `closeActive()` resets all three dismissible states (`paletteOpen: false, activeDrawer: null, helpOpen: false`) in one atomic set — the `helpOpen` reset was added in `fix(T37)` after QA found Escape left the shortcuts dialog open (T37 AC4) |
+| `console-v2/src/hooks/useShortcuts.ts` | Global keyboard shortcut hook (T37) — registers a `window.addEventListener('keydown', handler)` on mount and removes it on unmount; `isMac()` checks `navigator.platform.includes('Mac')`, `modKey(e)` returns `e.metaKey` (macOS) or `e.ctrlKey` (other platforms); `SUPPRESSED_TAGS = ['INPUT', 'TEXTAREA', 'SELECT']` guard + `target.isContentEditable` check prevent shortcuts from firing inside text fields; full shortcut map: `k` → `openPalette()`, `1`–`5` → `navigateTo('fleet'|'queue'|'pipeline'|'cost'|'trust')`, `Escape` → `closeActive()`, `?` → `toggleHelp()`; consumes Zustand actions via individual selectors to avoid unnecessary re-renders; hook is mounted exactly once in `<App />` (T37 AC1/AC2/AC4) |
+| `console-v2/src/components/ShortcutsDialog.tsx` | Keyboard shortcuts help overlay (T37) — reads `helpOpen` and `toggleHelp` from `useShortcutStore`; returns `null` when `helpOpen` is `false` (no-op render, no portal overhead); outer backdrop `<div role="presentation" className="fixed inset-0 z-50 ...">` closes on click via `onClick={toggleHelp}`; inner `<div role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">` stops propagation; renders a `<table>` with two columns (Shortcut | Action) over `SHORTCUTS` constant (8 rows); `<kbd>` elements styled with `font-mono text-xs bg-[--color-base] border border-[--color-border] rounded`; closes on Escape via `closeActive()` in `useShortcuts` (T37 AC3) |
+| `console-v2/src/shortcuts.test.tsx` | 13 Vitest tests for keyboard shortcuts (T37) — `ShortcutsHost` renders `useShortcuts()` with no UI; `fire(opts)` dispatches `new KeyboardEvent('keydown', ...)` to `window`; `beforeEach` resets store state; `afterEach` calls `cleanup()`; tests: AC1 (Ctrl+K → `paletteOpen=true`; Ctrl+1–5 → correct `activeTab`; Escape → `paletteOpen=false`); AC3 (Ctrl+? → `helpOpen=true`; Ctrl+? again → `helpOpen=false`; Escape with `helpOpen=true` → `helpOpen=false`); AC2 (Ctrl+K suppressed when target is `INPUT`, `TEXTAREA`, or `SELECT` — uses `Object.defineProperty(evt, 'target', ...)` to spoof the event target since `KeyboardEvent.target` is read-only) (T37 AC1/AC2/AC3/AC5) |
 
 ---
 
@@ -3110,14 +3118,23 @@ supervisor/console-v2/
 ├── tsconfig.json / tsconfig.app.json / tsconfig.node.json
 ├── src/
 │   ├── main.tsx                    # React 19 entry; QueryClient + QueryClientProvider
-│   ├── App.tsx                     # placeholder heading with Framer Motion fade-in
+│   ├── App.tsx                     # header (StatusRing + ThemeToggle) + centred main (T24/T36/T37)
 │   ├── App.test.tsx                # renders-without-crashing Vitest test
-│   ├── test-setup.ts               # jsdom DOM globals bound to globalThis
+│   ├── test-setup.ts               # jsdom DOM globals + localStorage + matchMedia + KeyboardEvent stubs (T24/T36/T37)
+│   ├── theme.test.tsx              # 9 dark-mode tests — AC2–AC5 (T36)
+│   ├── shortcuts.test.tsx          # 13 keyboard shortcut tests — AC1–AC3/AC5 (T37)
 │   ├── vite-env.d.ts               # /// <reference types="vite/client" />
 │   ├── index.css                   # Tailwind v4 @import; shadcn CSS vars; dark mode
-│   ├── styles/tokens.css           # @theme: palette, 8pt grid, radius, motion tokens
+│   ├── styles/tokens.css           # @theme: light defaults + .dark{} overrides (T24/T36)
 │   ├── lib/utils.ts                # cn() = twMerge(clsx(...))
-│   └── components/ui/button.tsx   # shadcn Button: 6 variants, 4 sizes, React.forwardRef
+│   ├── lib/theme.ts                # Theme type, getStoredTheme, applyTheme, persistTheme (T36)
+│   ├── hooks/useTheme.ts           # useTheme(): toggle, isDark, matchMedia listener (T36)
+│   ├── hooks/useShortcuts.ts       # global keydown listener; shortcut map; focus-suppression guard (T37)
+│   ├── store/shortcutStore.ts      # Zustand ShortcutStore: paletteOpen, activeTab, helpOpen + actions (T37)
+│   └── components/
+│       ├── ThemeToggle.tsx         # ghost Button with Sun/Moon icon (T36)
+│       ├── ShortcutsDialog.tsx     # ⌘? help overlay: backdrop + dialog + 8-row kbd table (T37)
+│       └── ui/button.tsx           # shadcn Button: 6 variants, 4 sizes, React.forwardRef
 └── bun.lock
 ```
 
@@ -3270,6 +3287,228 @@ bun test supervisor/console-v2/
 | AC7 | PR review — placeholder heading animates with fade-in (opacity 0→1) on mount | human-verify |
 | AC8 | `bun test supervisor/console-v2/` — renders-without-crashing test passes, exit 0 | done_check |
 | AC9 | `bun test supervisor/console/` exits 0 — all 181 existing v1.1 tests unaffected | done_check |
+
+---
+
+## Dark mode — Tailwind v4 `.dark` variant + system preference sync (T36)
+
+T36 adds full dark mode support to console-v2. Light-mode colours become the `@theme` defaults; the slate-900 dark palette is applied when the `dark` class is present on `<html>`. The active theme is persisted in `localStorage` under `console-theme` and syncs with the OS setting when set to `system`.
+
+### Token changes (AC1)
+
+`tokens.css` is refactored from a dark-only `@theme` block to light defaults + a `.dark {}` override block:
+
+| Token | Light (default) | Dark (`.dark {}`) |
+|---|---|---|
+| `--color-base` | `#ffffff` | `#0f172a` (slate-900) |
+| `--color-surface` | `#f8fafc` | `#1e293b` (slate-800) |
+| `--color-surface-2` | `#f1f5f9` | `#334155` (slate-700) |
+| `--color-border` | `#e2e8f0` | `#475569` (slate-600) |
+| `--color-text` | `#0f172a` | `#f8fafc` |
+| `--color-text-dim` | `#64748b` | `#94a3b8` |
+| `--color-text-micro` | `#94a3b8` | `#64748b` |
+| `--color-amber` | `#F59E0B` | `#fbbf24` |
+| `--color-amber-dim` | `#FBBF24` | `#fde68a` |
+| `--color-green` | `#22C55E` | `#4ade80` |
+| `--color-red` | `#EF4444` | `#f87171` |
+| `--color-blue` | `#3B82F6` | `#60a5fa` |
+
+Typography, spacing, radius, and motion tokens are unchanged.
+
+### Flash prevention — inline script (AC3/AC4)
+
+An inline `<script>` inserted before `</head>` in `index.html` runs synchronously before React hydrates:
+
+```html
+<script>
+  (function () {
+    var t = localStorage.getItem('console-theme');
+    if (t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.classList.add('dark');
+    }
+  })();
+</script>
+```
+
+The condition `t !== 'light'` catches both `'system'` and absent/null — if either is true and the OS is dark, the class is applied before the first paint with no layout recalculation needed.
+
+### Theme module — `src/lib/theme.ts`
+
+Exports four pure functions:
+
+| Export | Behaviour |
+|---|---|
+| `getStoredTheme()` | Reads `localStorage.getItem('console-theme')`; returns `'system'` on error or missing |
+| `isDarkPreferred()` | Returns `window.matchMedia('(prefers-color-scheme: dark)').matches` |
+| `applyTheme(theme)` | `classList.toggle('dark', theme === 'dark' \|\| (theme === 'system' && isDarkPreferred()))` |
+| `persistTheme(theme)` | `localStorage.setItem('console-theme', theme)` |
+
+### `useTheme` hook — `src/hooks/useTheme.ts` (AC2 / AC4 / AC5)
+
+```ts
+export function useTheme() {
+  const [theme, setThemeState] = useState<Theme>(getStoredTheme)
+
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const handler = () => { if (getStoredTheme() === 'system') applyTheme('system') }
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+
+  function toggle() {
+    const next: Theme = document.documentElement.classList.contains('dark') ? 'light' : 'dark'
+    persistTheme(next); applyTheme(next); setThemeState(next)
+  }
+
+  const isDark = theme === 'dark' || (theme === 'system' && isDarkPreferred())
+  return { theme, toggle, isDark }
+}
+```
+
+The `matchMedia` listener only fires `applyTheme` when the stored preference is `system` — explicit `light` or `dark` selections are never overridden by OS changes (AC5).
+
+### ThemeToggle component — `src/components/ThemeToggle.tsx` (AC2)
+
+A `Button variant="ghost" size="icon" aria-label="Toggle theme"` renders `<Sun />` when dark and `<Moon />` when light (both from `lucide-react`), placed in the App header right-aligned.
+
+### App.tsx changes (AC2 / AC6)
+
+T36 replaces the Phase A placeholder layout with a two-row flex shell:
+
+- Outer `<div>`: `bg-[--color-base] text-[--color-text]` — dark-mode token overrides apply automatically.
+- `<header>`: `border-b border-[--color-border]` with `StatusRing` (left) and `<ThemeToggle />` (right).
+- `<main>`: centred `<motion.div>` with the "Coming soon" heading.
+
+`StatusRing` is a `<motion.span>` with classes `ring-2 ring-current text-amber-500 dark:text-amber-400`. The `ring-current` CSS value inherits from `color`, so the amber pulse draws at `#fbbf24` in dark mode without a separate animation branch (AC6).
+
+### Test coverage (AC7)
+
+`theme.test.tsx` adds 9 tests under `describe('dark mode')`:
+
+| Test | AC | Assertion |
+|---|---|---|
+| dark system pref → dark class on load | AC3 | `html.classList.contains('dark') === true` |
+| light system pref → no dark class | AC3 | `html.classList.contains('dark') === false` |
+| explicit `light` overrides dark system | AC4 | dark class absent despite `matchMedia.matches === true` |
+| explicit `dark` overrides light system | AC4 | dark class present despite `matchMedia.matches === false` |
+| toggle L→D sets dark class + localStorage | AC2 | class added; `localStorage.getItem('console-theme') === 'dark'` |
+| toggle D→L removes dark class + localStorage | AC2 | class removed; `localStorage.getItem('console-theme') === 'light'` |
+| matchMedia `change` → dark (theme=system) | AC5 | `mq.trigger(true)` → dark class applied |
+| matchMedia `change` → light (theme=system) | AC5 | `mq.trigger(false)` → dark class removed |
+| matchMedia `change` ignored (explicit theme) | AC5 | `mq.trigger(true)`, localStorage `'light'` → dark class stays absent |
+
+`test-setup.ts` gains a `localStorage` polyfill and a default `matchMedia` stub. Tests that need to control `matches` install a full mock via `Object.defineProperty(window, 'matchMedia', { configurable: true, ... })`.
+
+### AC → verification mapping
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | PR review — `.dark {}` token block in `tokens.css`; light defaults in `@theme` | human-verify |
+| AC2 | `bun test supervisor/console-v2/` — toggle tests; localStorage updated | done_check |
+| AC3 | `bun test supervisor/console-v2/` — `applyTheme('system')` with matchMedia dark mock | done_check |
+| AC4 | `bun test supervisor/console-v2/` — explicit override tests | done_check |
+| AC5 | `bun test supervisor/console-v2/` — matchMedia `change` event tests | done_check |
+| AC6 | PR review — `StatusRing` uses `ring-current`; amber adapts in dark mode | human-verify |
+| AC7 | Covered by AC2–AC5 | done_check |
+
+---
+
+## Keyboard shortcuts — global shortcut map + ⌘? help overlay (T37)
+
+T37 adds a keyboard-first navigation layer to console-v2. A single global `keydown` listener (mounted once at `<App />` root) dispatches to a Zustand store; a `<ShortcutsDialog />` overlay shows the full map when the user presses `⌘?` or `Ctrl+?`.
+
+### Shortcut map (AC1)
+
+| Keys | Action | Store action |
+|---|---|---|
+| `⌘K` / `Ctrl+K` | Open command palette | `openPalette()` |
+| `⌘1` / `Ctrl+1` | Navigate to Fleet tab | `navigateTo('fleet')` |
+| `⌘2` / `Ctrl+2` | Navigate to Queue tab | `navigateTo('queue')` |
+| `⌘3` / `Ctrl+3` | Navigate to Pipeline tab | `navigateTo('pipeline')` |
+| `⌘4` / `Ctrl+4` | Navigate to Cost tab | `navigateTo('cost')` |
+| `⌘5` / `Ctrl+5` | Navigate to Trust tab | `navigateTo('trust')` |
+| `Escape` | Close active drawer / sheet / modal / help overlay | `closeActive()` |
+| `⌘?` / `Ctrl+?` | Toggle shortcuts help overlay | `toggleHelp()` |
+
+### Focus suppression (AC2)
+
+The handler returns early when focus is inside an editable element:
+
+```typescript
+const SUPPRESSED_TAGS = ['INPUT', 'TEXTAREA', 'SELECT']
+
+if (SUPPRESSED_TAGS.includes(target.tagName) || target.isContentEditable) return
+```
+
+`isContentEditable` covers `contenteditable="true"` elements that are not in `SUPPRESSED_TAGS`.
+
+### Platform detection
+
+`isMac()` returns `navigator.platform.includes('Mac')`. `modKey(e)` returns `e.metaKey` on macOS and `e.ctrlKey` elsewhere. This means ⌘ and Ctrl shortcuts behave identically on each platform without branching the shortcut definitions.
+
+### Zustand store (AC4)
+
+`useShortcutStore` (Zustand `create<ShortcutStore>`) holds three dismissible-state fields and one routing field:
+
+```typescript
+interface ShortcutStore {
+  paletteOpen: boolean
+  activeTab: Tab | null
+  activeDrawer: string | null
+  helpOpen: boolean
+  openPalette(): void
+  closePalette(): void
+  navigateTo(tab: Tab): void
+  closeActive(): void
+  toggleHelp(): void
+}
+```
+
+`closeActive()` resets `paletteOpen`, `activeDrawer`, and `helpOpen` in a single atomic `set(...)` call. This ensures Escape closes the shortcuts dialog as well as any command palette or drawer. The `helpOpen` reset was missing in the initial commit and was added in `fix(T37)` after QA found the dialog stayed open on Escape.
+
+The hook is mounted once in `<App />` — no prop callbacks, no context propagation overhead.
+
+### ShortcutsDialog (AC3)
+
+`<ShortcutsDialog />` renders `null` when `helpOpen` is `false`. When open it renders a fixed-position backdrop (`z-50`) with an inner dialog:
+
+- `role="presentation"` on backdrop, `role="dialog" aria-modal="true" aria-label="Keyboard shortcuts"` on inner panel
+- Backdrop click calls `toggleHelp()`; inner panel stops propagation
+- Shortcut rows use `<kbd>` elements styled with `font-mono text-xs bg-[--color-base] border border-[--color-border] rounded`
+- Escape closes via `closeActive()` in `useShortcuts` (not a native `<dialog>` element, so the hook handles Escape dismissal)
+
+### Test coverage (AC5)
+
+`shortcuts.test.tsx` — 13 tests in `describe('useShortcuts')`:
+
+| Test | AC | Assertion |
+|---|---|---|
+| `Ctrl+K` → palette open | AC1 | `paletteOpen === true` |
+| `Ctrl+1` → Fleet tab | AC1 | `activeTab === 'fleet'` |
+| `Ctrl+2` → Queue tab | AC1 | `activeTab === 'queue'` |
+| `Ctrl+3` → Pipeline tab | AC1 | `activeTab === 'pipeline'` |
+| `Ctrl+4` → Cost tab | AC1 | `activeTab === 'cost'` |
+| `Ctrl+5` → Trust tab | AC1 | `activeTab === 'trust'` |
+| `Escape` → palette closed | AC1 | `paletteOpen === false` |
+| `Escape` with `helpOpen=true` → help closed | AC3 | `helpOpen === false` |
+| `Ctrl+?` → help open | AC3 | `helpOpen === true` |
+| `Ctrl+?` again → help closed | AC3 | `helpOpen === false` |
+| `Ctrl+K` suppressed on INPUT | AC2 | `paletteOpen === false` |
+| `Ctrl+K` suppressed on TEXTAREA | AC2 | `paletteOpen === false` |
+| `Ctrl+K` suppressed on SELECT | AC2 | `paletteOpen === false` |
+
+Tests use `Object.defineProperty(evt, 'target', { value: element })` to spoof `KeyboardEvent.target`, which is read-only in the browser event model.
+
+### AC → verification mapping
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `bun test supervisor/console-v2/` — `describe("useShortcuts")` — fire ⌘K; assert palette open | done_check |
+| AC2 | `bun test supervisor/console-v2/` — fire ⌘K with focus on input; assert palette NOT opened | done_check |
+| AC3 | PR review — press ⌘?; confirm shortcuts dialog opens with table | human-verify |
+| AC4 | PR review — confirm single listener mounted at App level | human-verify |
+| AC5 | Covered by AC1–AC2 + AC3 human-verify | done_check |
 
 ---
 

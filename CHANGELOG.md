@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### Keyboard shortcuts — global shortcut map + ⌘? help overlay (T37)
+
+Fleet Console v2 now has keyboard-first navigation. Eight shortcuts cover the most common actions: open the command palette, jump to any of the five tabs, close the active panel, and toggle a full shortcut reference. Press `⌘?` (macOS) or `Ctrl+?` (other platforms) to see the complete map in a centred overlay. Shortcuts are silenced when focus is inside a text field so they never interfere with typing.
+
+#### Added
+- `src/store/shortcutStore.ts` — Zustand `ShortcutStore` with `paletteOpen`, `activeTab`, `activeDrawer`, `helpOpen` state and actions `openPalette()`, `navigateTo(tab)`, `closeActive()`, `toggleHelp()` (T37 AC4).
+- `src/hooks/useShortcuts.ts` — global `keydown` hook; maps `⌘K`/`Ctrl+K` → palette, `⌘1–5`/`Ctrl+1–5` → tab navigation, `Escape` → `closeActive()`, `⌘?`/`Ctrl+?` → `toggleHelp()`; suppresses shortcuts when target is `INPUT`, `TEXTAREA`, `SELECT`, or `contentEditable` (T37 AC1/AC2).
+- `src/components/ShortcutsDialog.tsx` — centred help overlay with `role="dialog"`, backdrop dismiss, and an 8-row `<kbd>` shortcut table; renders `null` when closed (T37 AC3).
+- `src/shortcuts.test.tsx` — 13 Vitest tests covering AC1 (all 7 shortcuts fire correct store actions), AC2 (suppression on INPUT/TEXTAREA/SELECT), and AC3 (toggle open, toggle closed, Escape closes) (T37 AC5).
+- `package.json` — `zustand@^5.0.14` added as a production dependency (T37 AC4).
+- `test-setup.ts` — `Event` and `KeyboardEvent` polyfills from `dom.window` added for shortcut test compatibility (T37 AC1/AC2/AC5).
+- `App.tsx` — `useShortcuts()` mounted once at root; `<ShortcutsDialog />` rendered at end of outer div (T37 AC3/AC4).
+
+### Server startup crash fixed — complete server-utils.ts import block restored (BUG-3)
+
+The console server crashed immediately on startup because `defaultWorkspacesPath` and 16 other symbols from `server-utils.ts` were missing from the import block. Every endpoint handler that called `bootstrapWorkspace`, `computeCostData`, `readTrustLedger`, or any of the other absent functions would also crash on first invocation. The full import block is now restored: 17 named exports and 3 type imports re-added. All 23 qa-smoke.sh assertions pass.
+
+#### Fixed
+- `server.ts` import block: `defaultWorkspacesPath`, `bootstrapWorkspace`, `makeRateLimiter`, `readAndValidatePostBody`, `readPidFile`, `defaultIsProcessAlive`, `defaultKillFn`, `stopProcess`, `readLogTail`, `computeStuckSignals`, `computeCostData`, `readWorkspaceRegistry`, `writeWorkspaceRegistry`, `readTrustLedger`, `writeTrustLedger`, `defaultTrustPath`, `purgeStaleDecisionFiles` re-added as named imports from `server-utils.ts` (BUG-3).
+- `server.ts` type imports: `CostResponse`, `Workspace`, `TrustRule` re-added from `server-utils.ts` (BUG-3).
+
+### Dark mode — Tailwind v4 `.dark` variant + system preference sync (T36)
+
+Fleet Console v2 ships with a complete dark mode implementation. Light colours become the default; the slate-900 dark palette activates when the `dark` class appears on `<html>`. The toggle button in the app header switches modes and saves the preference to `localStorage`. On first load, an inline script applies the correct class before React hydrates — no flash of the wrong colour scheme. When the preference is set to `system` (the default), the app tracks OS dark-mode changes live via `matchMedia`.
+
+#### Added
+- `src/styles/tokens.css` refactored: light colours are the `@theme` defaults (`#ffffff`/`#f8fafc`/`#0f172a` text); `.dark {}` block overrides to slate-900 palette (`#0f172a` bg, `#1e293b` surface) (T36 AC1).
+- Inline `<script>` in `index.html` applies `dark` class to `<html>` synchronously before hydration — prevents flash of wrong colour scheme (T36 AC3/AC4).
+- `src/lib/theme.ts` — `Theme` type, `THEME_KEY` constant, and four utilities: `getStoredTheme`, `isDarkPreferred`, `applyTheme`, `persistTheme` (T36 AC2–AC5).
+- `src/hooks/useTheme.ts` — `useTheme()` hook with live `matchMedia` system-preference listener; `toggle()` switches between explicit light and dark (T36 AC2/AC4/AC5).
+- `src/components/ThemeToggle.tsx` — ghost Button with `<Sun />`/`<Moon />` icon from lucide-react in the App header (T36 AC2).
+- `StatusRing` in `App.tsx` uses `ring-current` + `text-amber-500 dark:text-amber-400` so the pulse animation colour adapts in dark mode via `currentColor` (T36 AC6).
+- `src/theme.test.tsx` — 9 Vitest tests covering AC2–AC5: system pref, explicit override, toggle, and live matchMedia change (T36 AC7).
+- `test-setup.ts` gains `localStorage` and `matchMedia` stubs for dark-mode test isolation (T36 AC2–AC5).
+
 ### Fleet Console v2 — Phase A scaffold: Vite 6 + React 19 + Tailwind v4 + shadcn/ui (T24)
 
 The console is getting a complete React 19 rewrite. Phase A scaffolds `supervisor/console-v2/` as a standalone Bun workspace alongside the untouched v1.1 console — both directories coexist and share nothing. The new workspace ships with Vite 6, TypeScript, Tailwind v4 (CSS-first `@import`, no config file), shadcn/ui with the slate colour scheme and CSS variables, TanStack Query v5 wrapping the app entry point, and Framer Motion v11 animating the "coming soon" placeholder. Design tokens from `console/styles.css` are ported to a `@theme` block in `tokens.css` and extended with motion easing values. A Vitest renders-without-crashing test confirms the full stack wires together under `bun test supervisor/console-v2/`. Feature code and server integration follow in Phase B (T25).
