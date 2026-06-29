@@ -9,16 +9,16 @@ Scripts for starting, stopping, and monitoring the autonomous agent fleet.
 | `fleet.conf` | Declare all agents in one place |
 | `install.sh` | Register an agent as a launchd (macOS) or systemd (Linux) service |
 | `wake-listen.ts` | Supabase Realtime subscriber — wakes idle agents in <1s cross-machine |
-| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE; T11: fleet control routes — POST /api/fleet/stop, /restart, /pause, /resume; T11-amended: shim removed — `validAgents` built solely from `controlDir/fleet.conf` via `rebuildValidAgents()`, called at startup and on workspace switch; T15-amended: `POST /api/fleet/restart` calls `kernel/task fail {taskId} --agent {agentName} --role human` via `spawnSync` before stopping and relaunching — returns 500 if fail exits non-zero, skips if agent holds no claimed task; T5: `handleDraftDecision` rewritten — Anthropic SDK dependency removed, endpoint now appends a timestamped human note block to the agent's mailbox file and calls `gitCommitAndPush`) |
-| `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved) |
-| `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support, Pipeline tab panel with domain filter chips and spec panel) |
-| `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility, Pipeline tab with collapsible status groups, domain filter chips persisted in localStorage, spec panel on card click, `pipeline-update` SSE listener; T13-amended: `pipelineBootstrapped` one-shot guard on tab activate, `fetchPipeline()` called on SSE reconnect, all SSE listeners fixed from `currentEs` → `es`) |
-| `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces, pipeline group/card/filter/spec-panel component styles) |
-| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation (`TASK_ID_RE` supports both `CONS-003` and `T13` styles), fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), `makeLedgerWatchHandler` (broadcasts `pipeline-update` SSE on `.task` file changes), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files), `PipelineTask` type (T13); T11: `readPidFile` (reads PID from a pid file), `stopProcess` (SIGTERM + SIGKILL-after-5s async stop), `defaultIsProcessAlive` (signal-0 liveness check), `defaultKillFn` (signal sender), `KillFn`/`IsAliveFn` injectable types; T14: `computeStuckSignals` (reads each agent's JSONL tail + ledger, returns `StuckAgent[]` with silent/loop/fail_storm signals), `StuckAgent` type; T9: `readAndValidatePostBody` (validates Content-Type header + JSON body for all POST handlers; returns `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure) (v7.1) |
+| `console/server.ts` | Console HTTP server (v7.1 — auto-detects control repo, gates risky Bash commands, streams live events via SSE; T11: fleet control routes — POST /api/fleet/stop, /restart, /pause, /resume; T11-amended: shim removed — `validAgents` built solely from `controlDir/fleet.conf` via `rebuildValidAgents()`, called at startup and on workspace switch; T5: `handleDraftDecision` rewritten — Anthropic SDK dependency removed, endpoint now appends a timestamped human note block to the agent's mailbox file and calls `gitCommitAndPush`; T17: workspace registry endpoints — GET/POST `/api/workspaces`, DELETE `/api/workspaces/:id`, POST `/api/workspaces/:id/activate` (reloads `validAgents` from new workspace fleet.conf before SSE broadcast); startup bootstrap: `bootstrapWorkspace(controlDir, workspacesPath)` auto-registers `CONTROL_DIR` as a workspace if absent or not yet listed (AC5/AC6); T19: `GET /api/cost` — aggregates `tokens_in`, `tokens_out`, `cost_usd` per agent from `~/agents/<agent>/logs/live-events.jsonl`; 30s workspace-keyed in-memory cache (`costCache: Map<wsId, {data, expiresAt}>`); `?since=ISO` bypasses cache and computes fresh; `POST /api/workspaces/:id/activate` calls `costCache.delete(reg.activeId)` before switching; T21: trust ledger endpoints — GET `/api/trust` (returns rules or `{ rules: [] }` when file absent), POST `/api/trust` (validates agent against `validAgents`, pattern as non-empty string, action as `approve`|`reject`; appends rule via read-modify-write), DELETE `/api/trust/:id` (removes rule by id; 204 on success, 404 if not found); T22: decisions watcher — `watch(SUPERVISOR_DECISIONS_DIR, makeDecisionsWatchHandler(...))` added at startup when `SUPERVISOR_DECISIONS_DIR` is set; broadcasts `event: approval` SSE for new request files, skips files where `auto === true` (trust-auto-resolved) and skips `.decision.json` response files) |
+| `console/bin/bash` | Risk-gated Bash tool intercept (v7.1 — blocks destructive commands until approved; T22: on approve-rule match writes `{ approved: true, auto: true }` to `$SUPERVISOR_DECISIONS_DIR/${AGENT}-${REQUEST_ID}.decision.json` and logs `[trust] auto-approved: {cmd}` to stderr; on reject-rule match writes `{ approved: false, auto: true }` and exits 1 — no request file written in either case) |
+| `console/index.html` | Console UI entry point (v7.1 — serves static HTML with SSE support, Pipeline tab panel with domain filter chips and spec panel; T18: workspace switcher `<details>/<summary>` pill between the page subtitle and SSE dot — dropdown lists registered workspaces with active checkmark; inline "+ Add workspace" form with Name + Control directory fields and error slot; T20: replaces `.cost-placeholder` div with `<table class="cost-table" id="cost-table">` — thead with Agent / Tokens In / Tokens Out / Cost (USD) columns, `<tbody id="cost-tbody">`, `<tfoot id="cost-tfoot">`; `<p id="cost-last-updated" class="cost-last-updated">` paragraph below the table; T22: new `<section id="section-trust" hidden>` below the approval section — `<div id="trust-rules">` for rule rows injected by console.js; `<div id="trust-add-form" hidden>` with agent `<select>`, pattern `<input type="text">`, and approve/reject `<input type="radio">`; `<button id="trust-add-btn">Add rule</button>`; Queue tab `aria-controls` updated to include `section-trust`) |
+| `console/console.js` | Console interactive client (v7.1 — card animations, empty states, AI draft panel, ARIA accessibility, Pipeline tab with collapsible status groups, domain filter chips persisted in localStorage, spec panel on card click, `pipeline-update` SSE listener; T13-amended: `pipelineBootstrapped` one-shot guard on tab activate, `fetchPipeline()` called on SSE reconnect, all SSE listeners fixed from `currentEs` → `es`; T18: `workspaceRegistry` state, `fetchWorkspaces()` called on SSE connect, `renderWorkspaces()` (builds full dropdown list), `updateWorkspacePill()` (SSE-driven pill + checkmark update without rebuilding list), `activateWorkspace()` (POSTs to `/api/workspaces/:id/activate`), `initWorkspaceSwitcher()` IIFE (outside-click + Escape close, "+ Add workspace" expand, form submit with 400 error display and auto-activate on success), `workspace-switch` SSE listener; T20: `COST_URL` constant, `lastCostFetch` module-level timestamp (0 on load; set to `Date.now()` on each fetch), `costBootstrapped` flag (one-shot guard preventing re-fetch on repeated Cost tab clicks), `fetchCost()` (updates `lastCostFetch`, calls `GET /api/cost`, passes response to `renderCost()`), `renderCost(data)` (per-row `Intl.NumberFormat` for 4-dp cost and thousands-sep tokens, empty-state colspan=4 message, bold Total tfoot row, "Last updated: Xs ago" paragraph from `cachedAt`); `fleet-update` SSE handler extended: calls `fetchCost()` when `currentTab === 'cost'` and `Date.now() - lastCostFetch >= 30000`; T22: `TRUST_URL` constant; DOM refs `sectionTrust`, `trustRulesEl`, `trustAddForm`, `trustAddBtn`; state `trustRules = []`, `trustFormOpen = false`; `fetchTrust()` (GET /api/trust; sets `trustRules`; calls `renderTrustRules()`), `syncTrustState()` (shows `section-trust` when `trustRules.length > 0 || trustFormOpen`, hides otherwise — AC4), `renderTrustRules()` (rebuilds `trust-rules` div from `trustRules` array), `buildTrustRuleRow(rule)` (constructs row with agent/pattern/action badge and Revoke button; Revoke calls `DELETE /api/trust/{id}` with path param and `exitCard` 300ms fade-out), `populateTrustAgentSelect()` (fetches GET /api/fleet; populates `<select>` options from agent names — AC3); `switchTab('queue')` now calls `fetchTrust()` and hides `sectionTrust` on non-queue tabs; Add rule button shows form + hides itself; Cancel button hides form; Save button POSTs to TRUST_URL and appends new rule row without page reload) |
+| `console/styles.css` | Console design system (v7.1 — dark theme, motion tokens, Satoshi/DM Sans/JetBrains Mono typefaces, pipeline group/card/filter/spec-panel component styles; T18: `.workspace-switcher`/`.workspace-pill` (monospace badge with `▾` arrow, amber border when open), `.workspace-dropdown` (absolute panel, z-index 200), `.workspace-item`/`.workspace-item-active`/`.workspace-item-check`, `.workspace-add-section`/`.workspace-add-btn`, `.workspace-form`/`.workspace-form-field`/`.workspace-form-error` (red), `.workspace-register-btn` (amber); T20: `.cost-table` (full-width, `border-collapse: collapse`), `.cost-table th` (mono 10px uppercase, letter-spacing 0.08em), `.cost-table td` (mono 12px, `var(--space-3)` padding, bottom border), `.cost-table tbody tr:hover td` (surface background), `.cost-table tfoot td` (top border, no bottom border), `.cost-empty` (centered dim placeholder for empty-state row), `.cost-updated` (mono 11px dim — note: HTML class is `cost-last-updated`), `.cost-num`/`.cost-num-col` (right-aligned numeric columns); T22: `.trust-rule-row` (flex row with card border/radius/surface background, `margin-bottom: var(--space-2)`), `.trust-rule-agent` (mono 12px dim, `min-width: 80px`), `.trust-rule-pattern` (mono 13px, `flex: 1`), `.trust-action-approve` (green badge — `color-mix(in srgb, var(--green) 15%, transparent)` background), `.trust-action-reject` (red badge), `.btn-trust-revoke` (transparent border button, hover turns red border + red text), `.trust-add-form:not([hidden])` (flex column form — uses `:not([hidden])` to prevent `display:flex` from overriding the browser `[hidden]` UA rule), `.trust-form-row`/`.trust-form-label`/`.trust-form-select`/`.trust-form-input` (form field components), `.trust-radio-label` (radio option label), `.trust-form-btns` (right-aligned button row), `.btn-trust-secondary` (cancel — transparent border), `.btn-trust-save` (amber background, dark text, semibold), `.btn-add-rule` (dashed border, full-width, hover amber)) |
+| `console/server-utils.ts` | Utility exports — parsing ledger/mailbox, task ID validation (`TASK_ID_RE` supports both `CONS-003` and `T13` styles), fleet status reading, SSE helpers, `makeWatchHandler` (reads last `live-events.jsonl` line, caches payload for Last-Event-ID replay), `makeLedgerWatchHandler` (broadcasts `pipeline-update` SSE on `.task` file changes), port resolution, `readLogTail` (JSONL tail reader), `makeRateLimiter` (token-bucket rate limiter), `purgeStaleDecisionFiles` (startup garbage collection of stale decision files), `PipelineTask` type (T13); T11: `readPidFile` (reads PID from a pid file), `stopProcess` (SIGTERM + SIGKILL-after-5s async stop), `defaultIsProcessAlive` (signal-0 liveness check), `defaultKillFn` (signal sender), `KillFn`/`IsAliveFn` injectable types; T14: `computeStuckSignals` (reads each agent's JSONL tail + ledger, returns `StuckAgent[]` with silent/loop/fail_storm signals), `StuckAgent` type; T9: `readAndValidatePostBody` (validates Content-Type header + JSON body for all POST handlers; returns `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure); T17: `Workspace`/`WorkspaceRegistry` types, `defaultWorkspacesPath` (`~/.gstack-console/workspaces.json`), `readWorkspaceRegistry` (reads file; returns empty registry on missing file), `writeWorkspaceRegistry` (mkdir-p + write), `bootstrapWorkspace` (idempotent: no-op if controlDir already listed; creates registry with controlDir as active workspace if absent, appends if registry exists but lacks that path); T19: `computeCostData(agents, agentsHome, sinceIso?)` (reads each agent's `logs/live-events.jsonl`, skips events without `cost_usd` or with non-numeric `cost_usd`, accumulates per-agent totals rounded to 4 dp), `CostAgentRow` type `{ agent: string; tokens_in: number; tokens_out: number; cost_usd: number }`, `CostResponse` type `{ agents: CostAgentRow[]; total: { tokens_in, tokens_out, cost_usd }; cachedAt: string }`; T21: `TrustRule` type `{ id: string; agent: string; pattern: string; action: "approve" | "reject"; createdAt: string }`, `TrustLedger` type `{ rules: TrustRule[] }`, `defaultTrustPath` (`~/.gstack-console/trust.json`), `readTrustLedger` (parse file; returns `{ rules: [] }` on missing file or malformed JSON), `writeTrustLedger` (mkdir-p + `JSON.stringify` with 2-space indent); T22: `makeDecisionsWatchHandler(decisionsDir, broadcastFn)` — fs.watch callback for `SUPERVISOR_DECISIONS_DIR`; on any `.json` file change: reads file, skips if `auto === true` (trust-resolved), skips if filename ends in `.decision.json` (response file), otherwise broadcasts `event: approval\ndata: {payload}\n\n` SSE frame (AC8) (v7.1) |
 | `console/bash-wrapper.test.ts` | Bun test wrapper that runs bash-wrapper.test.sh inline (v7.1) |
-| `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk) and polling behavior (poll_approval) (v7.1) |
-| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), and T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4) (135 total: 2 bash-wrapper + 133 server) |
-| `console/qa-smoke.sh` | QA smoke test for console UI — asserts page title, nav bar, Fleet tab presence, T6 AC1/AC2/AC4/AC5 (Dicebear avatar src, elapsed time format, HIGH risk badge, Unblock button), and T13 AC4/AC5 (pipeline endpoint 200, `pipeline-groups` element in HTML, `tasks` key in pipeline JSON) via gstack browse (v7.1) |
+| `console/bash-wrapper.test.sh` | Bash unit tests for risk classification (check_risk), polling behavior (poll_approval), T21 trust ledger bash checks (AC4/AC5/AC6a/AC6b), and T22 trust auto-decision file tests (AC6: approve rule writes `{ approved:true, auto:true }` decision file, no request file, stderr `[trust] auto-approved:`; AC7: reject rule writes `{ approved:false, auto:true }` decision file, exits 1, stderr `[trust] auto-rejected:`) (v7.1) |
+| `console/server.test.ts` | Bun tests for endpoint security, static serving, queue bootstrap, `resolveControlDir`, SSE endpoint (T4 AC1/AC2/AC3/AC5), `makeWatchHandler`, log tail endpoint (T12 AC1-AC7), rate limiter, startup cleanup (T8 AC1-AC4), pipeline endpoint (T13 AC1/AC2), ledger watch handler (T13 AC3), spec endpoint (T13 AC7), pipeline bootstrap guard (T13-amended AC2), SSE reconnect pipeline bootstrap (T13-amended AC4), fleet control endpoints (T11 AC1-AC8), stuck detection engine (T14 AC1-AC8), fleet.conf-based validAgents (T11-amended AC2/AC3/AC4), malformed JSONL resilience (T14-amended AC2/AC3/AC4), T9 edge-case coverage (malformed JSON body AC1, missing Content-Type AC2, concurrent SSE AC3, rawPath dot-segment preservation AC4, parseMailboxNotes edge cases AC5, makeWatchHandler rename+change AC6, GET /api/fleet absent fleet.conf AC7, qa-smoke.sh AC8), BUG-2 regression guard (static grep: `computeStuckSignals` must not receive the undefined `agentList` variable), T16-amended gap tests (stale PID AC1, stuck loop threshold boundary AC2, stuck signal precedence AC3, log n=0 AC4), workspace registry (T17 AC1-AC7: GET/POST /api/workspaces, DELETE /api/workspaces/:id, POST /api/workspaces/:id/activate, bootstrapWorkspace AC5/AC6, validAgents reload AC7), T17a back-compat (CONTROL_DIR first boot AC1, existing registry AC2, validAgents from fleet.conf AC3, missing fleet.conf AC4), and T19 cost tracker (AC1: aggregation with known JSONL totals, AC2: 30s cache hit — second call uses cached result, AC3: cache invalidation on workspace-switch via `costInvalidateFn`, AC4: malformed `cost_usd` skipped without 500, AC5: `?since=` filter bypasses cache and returns filtered totals, AC6: no-cost-data → empty agents array), T19-amended cache contract tests (cachedAt ISO string AC1, TTL spy/hit AC2, workspace-switch invalidation AC3, since-bypass double-call AC4/AC5 — ports 7894/7895/7896), T21 trust ledger (GET AC1: 2 tests, POST AC2: 4 tests, DELETE AC3: 2 tests — port 7890), and T22 decisions watcher (makeDecisionsWatchHandler AC8: 5 tests — no broadcast on auto:true decision file, no broadcast on .decision.json human file, broadcast on request .json file, no broadcast on non-.json, no broadcast on unreadable file) (161 total: 2 bash-wrapper + 159 server) |
+| `console/qa-smoke.sh` | QA smoke test for console UI — boots server on a random free port, asserts all GET endpoints return 200, T13 AC4/AC5 (pipeline JSON + `pipeline-groups` element), T15 AC1/AC2 (stuck endpoint + `stuck-cards` element + `stuck-alert-slot` DOM order), T16 AC6/AC7 (JSON content-type headers, fleet stop mock PID), T18 AC1 (`workspace-pill` element in HTML), T17 AC1 (`GET /api/workspaces` returns 200 with `workspaces` key), T20 AC1/AC7 (`index.html` contains `cost-table` and `cost-tbody` elements), T20 AC6 (`GET /api/cost` returns 200 with `agents` key), T22 AC1 (POST /api/trust → rule returned; GET /api/trust → `rules` key present; `index.html` contains `section-trust` and `trust-rules` elements) — 30 checks total (v7.1) |
 
 ---
 
@@ -458,7 +458,7 @@ The regex rejects:
 - Starts with a digit: `3CONS` ✗
 
 **Fleet.conf parsing (AC6 / T11-amended AC1–AC3):**
-At startup, `server.ts` calls `rebuildValidAgents(controlDir)`, which reads `controlDir/fleet.conf` and builds `validAgents` — a `Set<string>` of all agent names listed in the file. All agents listed in `fleet.conf` are immediately valid. If `controlDir/fleet.conf` is absent or unreadable, `validAgents` is set to an empty `Set` and a warning is written to stderr; the server continues (T11-amended AC2). When the workspace changes (via `POST /api/workspace-switch`), `rebuildValidAgents` is called again with the new `controlDir`; if the new `fleet.conf` is absent, `validAgents` is emptied rather than kept from the previous workspace (T11-amended AC3). The Set is queried on every request to `/api/mailbox/:agentName`.
+At startup, `server.ts` calls `rebuildValidAgents(controlDir)`, which reads `controlDir/fleet.conf` and builds `validAgents` — a `Set<string>` of all agent names listed in the file. All agents listed in `fleet.conf` are immediately valid. If `controlDir/fleet.conf` is absent or unreadable, `validAgents` is set to an empty `Set` and a warning is written to stderr; the server continues (T11-amended AC2). When the workspace changes (via `POST /api/workspaces/:id/activate`, T17), `rebuildValidAgents` is called with the new workspace's `controlDir` before the `workspace-switch` SSE event is broadcast; if the new `fleet.conf` is absent, `validAgents` is emptied rather than kept from the previous workspace (T11-amended AC3, T17 AC7). The Set is queried on every request to `/api/mailbox/:agentName`.
 
 **POST body validation — `readAndValidatePostBody` (T9 AC1/AC2):**
 All POST endpoints (`/api/mailbox/:agentName`, `/api/approve`, `/api/draft-decision`) call `readAndValidatePostBody(req)` before any filesystem or git operation. The function checks the `Content-Type` header (must include `application/json`) and parses the request body as JSON. A wrong content type or unparseable body produces an immediate HTTP 400 response. The function returns a discriminated union: `{ ok: true; json: unknown; raw: string }` on success or `{ ok: false; statusCode: number; error: string }` on failure. Prior to T9, each handler read raw body bytes and called `JSON.parse` independently, and a missing `Content-Type` header was silently accepted.
@@ -743,9 +743,9 @@ The console UI organizes control surfaces into four tabs: **Fleet**, **Queue**, 
 ### Tabs and panels
 
 - **Fleet tab** — Shows agent fleet status (agent names, states, current task, elapsed time, recent tool use)
-- **Queue tab** — Shows pending tasks awaiting approval (the approval section from earlier sections)
+- **Queue tab** — Shows pending tasks awaiting approval (the approval section from earlier sections) and the Trust rules section at the bottom (T22 — hidden when 0 rules and no add-form open)
 - **Pipeline tab** — Shows all ledger tasks grouped by status (In progress / Blocked / Open / Done), with domain filter chips and a spec panel that opens on card click (T13)
-- **Cost tab** — Placeholder for operational cost tracking (not yet implemented; currently shows static text)
+- **Cost tab** — Shows a per-agent cost breakdown table (Agent / Tokens In / Tokens Out / Cost (USD)) with a bold Total footer row and a "Last updated: Xs ago" line. Data comes from `GET /api/cost`, fetched on first tab activation and after `fleet-update` SSE events (debounced 30s). `cost_usd` is formatted to 4 decimal places; tokens use thousands separators (T19 + T20).
 
 ### Implementation
 
@@ -1312,6 +1312,573 @@ This branch also includes a one-line fix to the `GET /api/stuck` handler in `ser
 
 ---
 
+## Workspace registry (T17)
+
+T17 lets directors register multiple ECOBA engagements (workspaces) on one machine and switch between them without restarting the console server. A workspace is a control repo checked out at a specific path; the registry lives at `~/.gstack-console/workspaces.json`.
+
+### Registry file format
+
+```json
+{
+  "workspaces": [
+    { "id": "w1", "name": "Project Alpha", "controlDir": "/Users/u/alpha-control", "createdAt": "2026-01-01T00:00:00.000Z" }
+  ],
+  "activeId": "w1"
+}
+```
+
+`id` is a `crypto.randomUUID()` string. If the file does not exist, the registry is treated as `{ workspaces: [], activeId: null }`.
+
+### Startup bootstrap (AC5/AC6)
+
+On server startup, if `CONTROL_DIR` is set, `bootstrapWorkspace(controlDir, workspacesPath)` runs before any request is handled:
+
+- **AC5:** If `workspaces.json` does not exist, the file is created with one workspace entry using `CONTROL_DIR` as `controlDir` and `basename(controlDir)` as the name; that workspace is set as `activeId`.
+- **AC6:** If `workspaces.json` exists but no entry has a matching `controlDir`, the new workspace is appended. The existing `activeId` is preserved.
+- If the file already contains an entry for that `controlDir`, `bootstrapWorkspace` is a no-op.
+
+### GET /api/workspaces (AC1)
+
+Returns the full registry:
+
+```
+GET /api/workspaces
+→ 200 { workspaces: Workspace[], activeId: string | null }
+```
+
+If `workspaces.json` is absent or unreadable, returns `{ workspaces: [], activeId: null }` rather than 404 or 500.
+
+### POST /api/workspaces (AC2)
+
+Adds a new workspace entry:
+
+```
+POST /api/workspaces
+Content-Type: application/json
+{ "name": "Project Beta", "controlDir": "/abs/path/to/beta-control" }
+
+→ 200 { workspace: Workspace }
+→ 400 { error: "controlDir must be an absolute path" }          (relative path)
+→ 400 { error: "controlDir/ledger not found" }                  (no ledger/ dir)
+```
+
+Validation order: `readAndValidatePostBody` (Content-Type + JSON), then `path.isAbsolute(controlDir)`, then `existsSync(join(controlDir, 'ledger'))`. A UUID `id` and ISO `createdAt` are generated server-side; the caller provides only `name` and `controlDir`.
+
+### DELETE /api/workspaces/:id (AC3)
+
+Removes a workspace from the registry:
+
+```
+DELETE /api/workspaces/:id
+→ 204 (no body)
+→ 404 { error: "not found" }
+```
+
+If the deleted workspace was `activeId`, `activeId` shifts to the first remaining workspace, or `null` if the registry is now empty.
+
+### POST /api/workspaces/:id/activate (AC4/AC7)
+
+Switches the active workspace and reloads `validAgents`:
+
+```
+POST /api/workspaces/:id/activate
+→ 200 { ok: true }
+→ 404 { error: "not found" }
+```
+
+Before broadcasting the `workspace-switch` SSE event, `rebuildValidAgents(ws.controlDir)` runs server-side so the new `validAgents` Set is in effect for all subsequent requests (AC7). The SSE payload is:
+
+```
+event: workspace-switch
+data: { "workspaceId": "<id>", "name": "<name>", "controlDir": "<path>" }
+```
+
+### AC → verification mapping (T17)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `describe("GET /api/workspaces (AC1)")` — missing file → empty registry; populated file → correct body | done_check |
+| AC2 | `describe("POST /api/workspaces (AC2)")` — relative path → 400; missing ledger → 400; valid controlDir → workspace appended and returned | done_check |
+| AC3 | `describe("DELETE /api/workspaces/:id (AC3)")` — delete active → activeId shifts to next; delete last → activeId null | done_check |
+| AC4 | `describe("POST /api/workspaces/:id/activate (AC4)")` — sets activeId, broadcasts workspace-switch SSE frame with correct payload, returns `{ ok: true }` | done_check |
+| AC5 | `describe("bootstrapWorkspace AC5/AC6")` — absent registry: created with CONTROL_DIR entry as activeId | done_check |
+| AC6 | `describe("bootstrapWorkspace AC5/AC6")` — existing registry without that controlDir: new entry appended, original activeId preserved | done_check |
+| AC7 | `describe("POST /api/workspaces/:id/activate validAgents reload (AC7)")` — activate call triggers `rebuildValidAgentsFn` with the activated workspace's `controlDir` | done_check |
+
+### CONTROL_DIR back-compat invariant (T17a)
+
+T17a locks in the invariant that `CONTROL_DIR` env causes `bootstrapWorkspace` to auto-register the path on startup — preserving backward compatibility with all existing `run-agent.sh` and CI scripts that set this variable without creating a `workspaces.json` first.
+
+The invariant has two parts:
+
+- **First boot (AC1):** If `CONTROL_DIR` is set and `workspaces.json` does not yet exist, `bootstrapWorkspace` creates the file with one entry using `CONTROL_DIR` as `controlDir`. That workspace's UUID is written as `activeId`. `GET /api/workspaces` returns exactly this workspace with a valid UUID4 `id`.
+- **Existing registry (AC2):** If `workspaces.json` already exists (one or more workspaces with an established `activeId`), `bootstrapWorkspace` appends the new `CONTROL_DIR` path as a second workspace without changing `activeId`. The pre-existing active workspace remains active.
+
+`parseFleetConf` is also tested standalone (AC3/AC4) to confirm that the `validAgents` Set it produces is correct when `fleet.conf` is present, and is an empty `Set` (no crash) when the file is absent.
+
+### AC → verification mapping (T17a)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `describe("CONTROL_DIR back-compat: first boot (AC1)")` — no `workspaces.json`; `bootstrapWorkspace` called; GET returns 1 workspace with UUID `activeId` matching the workspace id | done_check |
+| AC2 | `describe("CONTROL_DIR back-compat: existing registry (AC2)")` — pre-existing registry with `existingActiveId`; `bootstrapWorkspace` appends new workspace; GET returns 2 workspaces; `activeId` still `existingActiveId` | done_check |
+| AC3 | `describe("CONTROL_DIR back-compat: validAgents (AC3)")` — `parseFleetConf` on a 3-line `fleet.conf`; result Set has size 3 with expected agent names | done_check |
+| AC4 | `describe("CONTROL_DIR back-compat: missing fleet.conf (AC4)")` — `parseFleetConf` call wrapped in try/catch on absent file; `validAgents` is empty Set, no exception propagates | done_check |
+
+---
+
+## Workspace switcher UI (T18)
+
+T18 wires the workspace registry (T17) into the console header. A `<details>/<summary>` pill sits between the page subtitle and the SSE status dot. It shows the active workspace name (truncated to 24 chars with `…`) or "No workspace" when `activeId` is null. Clicking the pill opens a dropdown that lists all registered workspaces and lets the director switch or add workspaces without restarting the server.
+
+### HTML structure (`index.html`)
+
+```html
+<details class="workspace-switcher" id="workspace-switcher">
+  <summary class="workspace-pill" id="workspace-pill">No workspace</summary>
+  <div class="workspace-dropdown">
+    <div class="workspace-list" id="workspace-list"></div>
+    <div class="workspace-add-section">
+      <button class="workspace-add-btn" id="workspace-add-btn" type="button">+ Add workspace</button>
+      <form class="workspace-form" id="workspace-form" hidden>
+        <div class="workspace-form-field">
+          <label for="workspace-name-input">Name</label>
+          <input type="text" id="workspace-name-input" required placeholder="Project Alpha">
+        </div>
+        <div class="workspace-form-field">
+          <label for="workspace-dir-input">Control directory</label>
+          <input type="text" id="workspace-dir-input" required placeholder="/Users/you/control-repo">
+          <div class="workspace-form-error" id="workspace-form-error" style="display:none"></div>
+        </div>
+        <div class="workspace-form-actions">
+          <button type="submit" class="workspace-register-btn">Register</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</details>
+```
+
+The `<details>` element lives in the page header, placed between `.page-header-spacer` and `.sse-indicator`. The native browser toggle behaviour handles open/close without any custom JS popup positioning.
+
+### JavaScript state and functions (`console.js`)
+
+**State:**
+
+```js
+let workspaceRegistry = { workspaces: [], activeId: null };
+```
+
+**`fetchWorkspaces()`** — called once on SSE `open`. GETs `/api/workspaces`, stores the result in `workspaceRegistry`, then calls `renderWorkspaces()`.
+
+**`truncate24(str)`** — helper that truncates a string to 24 characters and appends `…` if needed.
+
+**`renderWorkspaces(reg)`** — rebuilds the full dropdown list. Updates the pill text to the active workspace name (or "No workspace"). For each workspace, creates a `<button class="workspace-item">` with a `✓` check in `.workspace-item-check` for the active entry. Click activates that workspace via `activateWorkspace(id)`.
+
+**`updateWorkspacePill(workspaceId, workspaceName)`** — SSE-driven update. Updates the pill `textContent` and toggles `.workspace-item-active` + checkmark on the existing list items WITHOUT rebuilding the full dropdown (AC4). Updates `workspaceRegistry.activeId` in memory.
+
+**`activateWorkspace(id)`** — POSTs to `/api/workspaces/:id/activate` (fire-and-forget).
+
+**`initWorkspaceSwitcher()` IIFE** — wires up:
+- Outside-click close: `document.addEventListener('click', e => { if (!switcher.contains(e.target)) switcher.open = false })`
+- Escape close: `document.addEventListener('keydown', e => { if (e.key === 'Escape' && switcher.open) switcher.open = false })`
+- "+ Add workspace" click: hides the button, un-hides the form, focuses the Name input.
+- Form submit: validates both fields non-empty, clears any previous error, POSTs `{ name, controlDir }` to `/api/workspaces`. On 400 response, reads `response.error` and displays it in `.workspace-form-error` below the Control directory field in red (AC5). On success, pushes the returned `workspace` into `workspaceRegistry.workspaces`, calls `renderWorkspaces()`, auto-activates the new workspace via `activateWorkspace()`, collapses the form, and resets all fields (AC6).
+
+### CSS classes (`styles.css`)
+
+| Class | Description |
+|-------|-------------|
+| `.workspace-switcher` | `position: relative` wrapper around the `<details>` element |
+| `.workspace-pill` | Monospace badge styled with `var(--surface-2)` background and `var(--border)` border; `▾` arrow via `::after` |
+| `.workspace-switcher[open] .workspace-pill` | Amber (`var(--amber)`) border and full-text colour when dropdown is open |
+| `.workspace-dropdown` | Absolute panel, `top: calc(100% + 8px)`, `right: 0`, `min-width: 240px`, `z-index: 200`, dark surface with box shadow |
+| `.workspace-list` | `max-height: 200px`, `overflow-y: auto` — scrollable if many workspaces |
+| `.workspace-item` | Full-width button, monospace 12px, no background; hover → `var(--surface-2)` |
+| `.workspace-item-active` | Full `var(--text)` colour (not dimmed) |
+| `.workspace-item-check` | Fixed 12px wide, `var(--color-green)`, shows `✓` for the active workspace |
+| `.workspace-add-section` | Separator line + top padding above the "+ Add workspace" button |
+| `.workspace-add-btn` | Subdued 11px button; hover darkens text |
+| `.workspace-form` | `padding: 12px 16px 8px` |
+| `.workspace-form-field` | Stacked label + input; label uses uppercase monospace caption style |
+| `.workspace-form-error` | 11px red text (`var(--red)`), initially `display:none` |
+| `.workspace-register-btn` | Amber background, base text, 11px bold — right-aligned in `.workspace-form-actions` |
+
+### AC → verification mapping (T18)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `qa-smoke.sh` — asserts `.workspace-pill` element present in `index.html` | e2e_check |
+| AC2 | PR review — click pill; confirm dropdown opens; click non-active workspace; confirm POST `/api/workspaces/:id/activate` fires and dropdown closes | human-verify |
+| AC3 | PR review — click "+ Add workspace"; confirm form expands with Name and Control directory fields and Register button | human-verify |
+| AC4 | PR review — activate workspace via API; confirm pill text and checkmark update without page reload | human-verify |
+| AC5 | PR review — submit invalid controlDir (400 from server); confirm `response.error` appears in red below Control directory field | human-verify |
+| AC6 | PR review — add valid workspace; confirm form collapses, new workspace appears in dropdown, it is auto-activated | human-verify |
+| AC7 | PR review — open dropdown; click outside element; confirm closes; press Escape; confirm closes | human-verify |
+
+---
+
+## Cost tracker (T19)
+
+T19 backs the Cost tab with real data. `GET /api/cost` reads each agent's `~/agents/<agent>/logs/live-events.jsonl`, sums `tokens_in`, `tokens_out`, and `cost_usd`, and returns per-agent rows plus a grand total. Results are cached in memory for 30 seconds, keyed by the active workspace ID.
+
+### Response shape (AC1)
+
+```json
+{
+  "agents": [
+    { "agent": "agent-be", "tokens_in": 1200, "tokens_out": 340, "cost_usd": 0.0183 }
+  ],
+  "total": { "tokens_in": 1200, "tokens_out": 340, "cost_usd": 0.0183 },
+  "cachedAt": "2026-01-01T12:00:00.000Z"
+}
+```
+
+Agents without any event containing a numeric `cost_usd` field do not appear in `agents[]`. If no agents have cost data, `agents` is `[]` and `total` is all-zero (AC6).
+
+### 30-second workspace-keyed cache (AC2)
+
+```ts
+const COST_CACHE_TTL_MS = 30_000;
+const costCache = new Map<string, { data: CostResponse; expiresAt: number }>();
+```
+
+The cache is keyed by `reg.activeId`. A cache hit (entry exists and `expiresAt > Date.now()`) returns the stored `CostResponse` without re-reading any JSONL files. A miss computes fresh data and stores it with `expiresAt = Date.now() + 30_000`.
+
+### Cache invalidation on workspace-switch (AC3)
+
+When `POST /api/workspaces/:id/activate` fires, the server calls `costCache.delete(reg.activeId)` **before** updating `reg.activeId`. This ensures the outgoing workspace's stale cost entry is evicted; the next `GET /api/cost` call for that workspace will compute fresh.
+
+### ?since= filter (AC5)
+
+```
+GET /api/cost?since=2026-01-01T11:00:00Z
+```
+
+When `since` is present, `computeCostData` filters to events where `ts >= since`. This path always computes fresh — it does not read from or write to the cache. `cachedAt` reflects the computation time of the filtered response.
+
+### Malformed cost fields skipped (AC4)
+
+`computeCostData` reads JSONL line-by-line with the same try/catch-per-line pattern introduced in T14-amended:
+
+1. Unparseable JSON → `continue`
+2. `cost_usd` field absent → `continue`
+3. `cost_usd` is not a finite `number` → `continue`
+
+Events with invalid `cost_usd` are skipped entirely — they do not inflate `tokens_in` or `tokens_out` for that agent, and no 500 can result from malformed data.
+
+### computeCostData — server-utils.ts
+
+```ts
+export function computeCostData(
+  agents: string[],
+  agentsHome: string,
+  sinceIso?: string,
+): CostResponse
+```
+
+Parameters:
+- `agents` — list of agent names to read (passed as `[...validAgents]` from `server.ts`)
+- `agentsHome` — root directory under which per-agent `logs/live-events.jsonl` files live; `server.ts` passes `join(homedir(), "agents")` (`~/agents`)
+- `sinceIso` — optional ISO 8601 timestamp; only events with `ts >= sinceIso` are counted
+
+`cost_usd` per agent is rounded to 4 decimal places with `Math.round(cu * 10000) / 10000`. The grand total is similarly rounded from the sum of per-agent `cost_usd` values.
+
+### AC → verification mapping (T19)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `describe("GET /api/cost aggregation (AC1)")` — JSONL for agent-a: 2 valid events (tokens_in 100/200, tokens_out 50/80, cost_usd 0.001/0.002) + 2 invalid lines; asserts agent-a row with tokens_in 300, tokens_out 130, cost_usd 0.003; grand total matches; `cachedAt` is string | done_check |
+| AC2 | `describe("GET /api/cost 30s cache (AC2)")` — injectable `stubCompute` counts calls; 2 sequential GETs on isolated server; asserts `callCount === 1` | done_check |
+| AC3 | `describe("GET /api/cost cache invalidation on workspace-switch (AC3)")` — pre-populates `ac3Cache` for `ac3-ws1`; POST activate `ac3-ws2` via `makeWorkspacesHandler` with `costInvalidateFn`; asserts `ac3Cache.has("ac3-ws1")` is false | done_check |
+| AC4 | `describe("GET /api/cost malformed cost fields skipped (AC4)")` — same fixture as AC1; asserts HTTP 200 and agent-a `cost_usd` = 0.003 (2 invalid lines did not contribute) | done_check |
+| AC5 | `describe("GET /api/cost ?since= filter (AC5)")` — 2 tests: `since=2026-01-01T11:30:00Z` → agents empty (no valid cost event at or after that time); `since=2026-01-01T10:30:00Z` → agent-a row with tokens_in 200, cost_usd 0.002 (only the 11:00 event qualifies) | done_check |
+| AC6 | `describe("GET /api/cost no cost data returns empty agents (AC6)")` — agent-b-only fixture (no cost_usd fields); asserts agents.length = 0, total.cost_usd = 0, cachedAt is string | done_check |
+
+---
+
+## Cost tab UI (T20)
+
+T20 replaces the Cost tab placeholder with a live-updating cost breakdown table. `fetchCost()` calls `GET /api/cost` (T19) on first tab activation and after each `fleet-update` SSE event when the Cost tab is active, throttled to at most one call per 30 seconds (matching the server cache TTL).
+
+### HTML structure (AC1)
+
+The static `.cost-placeholder` div is replaced with:
+
+```html
+<table class="cost-table" id="cost-table">
+  <thead>
+    <tr>
+      <th>Agent</th>
+      <th class="cost-num">Tokens In</th>
+      <th class="cost-num">Tokens Out</th>
+      <th class="cost-num">Cost (USD)</th>
+    </tr>
+  </thead>
+  <tbody id="cost-tbody"></tbody>
+  <tfoot id="cost-tfoot"></tfoot>
+</table>
+<p id="cost-last-updated" class="cost-last-updated"></p>
+```
+
+### JavaScript state and functions (AC3/AC4/AC5)
+
+| Name | Description |
+|---|---|
+| `COST_URL` | `'/api/cost'` constant |
+| `lastCostFetch` | Module-level timestamp; `0` on load; updated to `Date.now()` on each fetch |
+| `costBootstrapped` | Boolean; prevents re-fetch on repeated Cost tab clicks after first activation |
+| `fetchCost()` | Sets `lastCostFetch`, calls `GET /api/cost`, passes parsed JSON to `renderCost()` |
+| `renderCost(data)` | Renders tbody rows, tfoot Total row, and "Last updated" paragraph; clears all on empty state |
+
+`switchTab('cost')` is extended: if `!costBootstrapped`, sets `costBootstrapped = true` and calls `fetchCost()` immediately (AC3).
+
+The `fleet-update` SSE handler is extended at its end: if `currentTab === 'cost'` AND `Date.now() - lastCostFetch >= 30000`, calls `fetchCost()` (AC4).
+
+### Number formatting (AC2)
+
+```js
+const fmtCost   = new Intl.NumberFormat('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+const fmtTokens = new Intl.NumberFormat('en-US');
+```
+
+Cost cells render as `$0.0042`; token cells use thousands separators (`1,234,567`). Both formatters are constructed inside `renderCost()` on each call.
+
+### Empty state (AC6)
+
+When `data.agents` is absent or empty, `renderCost` writes a single spanning row and clears the Total footer:
+
+```html
+<tr><td colspan="4" class="cost-empty">No cost data yet — agents emit cost events as they run.</td></tr>
+```
+
+`lastUpdatedEl.textContent` is also cleared.
+
+### "Last updated" line (AC5)
+
+When `data.cachedAt` is present, `renderCost` computes elapsed seconds and sets:
+
+```
+Last updated: 12s ago
+```
+
+### CSS classes (styles.css)
+
+| Class | Purpose |
+|---|---|
+| `.cost-table` | Full-width table, `border-collapse: collapse` |
+| `.cost-table th` | Mono 10px, uppercase, letter-spacing 0.08em, dimmed color |
+| `.cost-table td` | Mono 12px, `var(--space-3)` padding, bottom border |
+| `.cost-table tbody tr:hover td` | Surface background on hover |
+| `.cost-table tfoot td` | Top border, no bottom border |
+| `.cost-empty` | Centered dim text for empty-state colspan row |
+| `.cost-updated` | Mono 11px dim (note: HTML element uses class `cost-last-updated`) |
+| `.cost-num` / `.cost-num-col` | Right-aligned numeric columns |
+
+### AC → verification mapping (T20)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `qa-smoke.sh` — `index.html` contains `id="cost-table"` and `id="cost-tbody"` | e2e_check |
+| AC2 | PR review — inject known cost value; confirm `$0.0042` format | human-verify |
+| AC3 | PR review — activate Cost tab; confirm `GET /api/cost` fires once | human-verify |
+| AC4 | PR review — while on Cost tab, emit `fleet-update` SSE; confirm refresh fires | human-verify |
+| AC5 | PR review — confirm "Last updated: Xs ago" element present | human-verify |
+| AC6 | `qa-smoke.sh` — `GET /api/cost` returns 200 with `"agents"` key | e2e_check |
+| AC7 | Covered by AC1 | e2e_check |
+
+---
+
+## Trust ledger (T21)
+
+Directors frequently approve the same low-risk commands — `bun test`, `git status`. The trust ledger lets them say "always approve this pattern for agent X" so the bash wrapper auto-approves without writing a decision request or waiting for console input.
+
+### Trust rule file format
+
+Trust rules are stored in `~/.gstack-console/trust.json`:
+
+```json
+{
+  "rules": [
+    {
+      "id": "r1",
+      "agent": "agent-be",
+      "pattern": "bun test",
+      "action": "approve",
+      "createdAt": "2026-01-01T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+`id` is a `crypto.randomUUID()` assigned at creation. `pattern` is stored verbatim — the server does not validate it as a bash command. If the file does not exist, the server treats the ledger as empty.
+
+### GET /api/trust (AC1)
+
+Returns all current trust rules.
+
+```
+GET /api/trust
+```
+
+**Response (200):**
+```json
+{ "rules": [ { "id": "r1", "agent": "agent-be", "pattern": "bun test", "action": "approve", "createdAt": "..." } ] }
+```
+
+If `~/.gstack-console/trust.json` does not exist, returns `{ "rules": [] }` — never 404.
+
+### POST /api/trust (AC2)
+
+Creates a new trust rule and appends it to the file.
+
+```
+POST /api/trust
+Content-Type: application/json
+
+{ "agent": "agent-be", "pattern": "bun test", "action": "approve" }
+```
+
+**Response (200):**
+```json
+{ "rule": { "id": "abc-uuid", "agent": "agent-be", "pattern": "bun test", "action": "approve", "createdAt": "2026-01-01T12:00:00.000Z" } }
+```
+
+**Error responses:**
+
+| Condition | Status | Body |
+|---|---|---|
+| `agent` not in `validAgents` | 400 | `{ "error": "unknown agent" }` |
+| `pattern` absent or empty string | 400 | `{ "error": "pattern must be a non-empty string" }` |
+| `action` not `"approve"` or `"reject"` | 400 | `{ "error": "action must be 'approve' or 'reject'" }` |
+| Missing or wrong Content-Type | 400 | (standard `readAndValidatePostBody` error) |
+
+Write is read-modify-write: `readTrustLedger` loads the file (or `{ rules: [] }` if absent), the new rule is pushed, then `writeTrustLedger` writes `JSON.stringify(ledger, null, 2)` back to disk.
+
+### DELETE /api/trust/:id (AC3)
+
+Removes a trust rule by id.
+
+```
+DELETE /api/trust/abc-uuid
+```
+
+**Response (204):** Rule removed, no body.
+
+**Response (404):** `{ "error": "not found" }` if no rule matches the id.
+
+### Bash wrapper trust check (AC4/AC5/AC6)
+
+When `bin/bash` intercepts a command, it checks the trust ledger **before** writing a decision request file. The check uses `python3 -c` — no `jq`, no `node`, no `bun` dependency (stock macOS may lack these).
+
+```bash
+TRUST_FILE="$HOME/.gstack-console/trust.json"
+if [ -f "$TRUST_FILE" ]; then
+  TRUST_RESULT=$(python3 -c "
+import json, sys
+try:
+    ledger = json.load(open(sys.argv[1]))
+    rules = ledger.get('rules', [])
+    agent = sys.argv[2]
+    cmd = sys.argv[3]
+    for rule in rules:
+        if rule.get('agent') == agent and rule.get('pattern', '') in cmd:
+            print(rule.get('action', ''))
+            break
+except Exception:
+    pass
+" "$TRUST_FILE" "$AGENT" "$CMD" 2>/dev/null || echo "")
+  if [ "$TRUST_RESULT" = "approve" ]; then
+    echo "[trust] auto-approved: $CMD" >&2
+    if [ -n "${SUPERVISOR_DECISIONS_DIR:-}" ]; then
+      mkdir -p "$SUPERVISOR_DECISIONS_DIR"
+      python3 -c "import json,sys; json.dump({'approved':True,'auto':True},open(sys.argv[1],'w'))" \
+        "$SUPERVISOR_DECISIONS_DIR/${AGENT}-${REQUEST_ID}.decision.json" 2>/dev/null || true
+    fi
+    exec "$REAL_BASH" "$@"
+  elif [ "$TRUST_RESULT" = "reject" ]; then
+    echo "[trust] auto-rejected: $CMD" >&2
+    if [ -n "${SUPERVISOR_DECISIONS_DIR:-}" ]; then
+      mkdir -p "$SUPERVISOR_DECISIONS_DIR"
+      python3 -c "import json,sys; json.dump({'approved':False,'auto':True},open(sys.argv[1],'w'))" \
+        "$SUPERVISOR_DECISIONS_DIR/${AGENT}-${REQUEST_ID}.decision.json" 2>/dev/null || true
+    fi
+    exit 1
+  fi
+fi
+```
+
+Matching rules (AC5): `rule['pattern'] in cmd` is a Python substring check — case-sensitive, first matching rule wins in order of creation. A pattern of `"bun test"` matches any command containing that string verbatim.
+
+Fallthrough: if `trust.json` does not exist, the `if [ -f "$TRUST_FILE" ]` guard skips the block entirely. If the file is malformed, the `except Exception: pass` silences the error and `TRUST_RESULT` is empty, so the wrapper falls through to the normal decision-request flow with no crash.
+
+**T22 auto-decision file (AC6/AC7):** When a trust rule fires, the wrapper writes a `.decision.json` file to `$SUPERVISOR_DECISIONS_DIR` before exec or exit. The file format is `{ "approved": true, "auto": true }` (approve) or `{ "approved": false, "auto": true }` (reject). The `auto: true` field signals to the decisions watcher (AC8) that no human SSE broadcast is needed — the command was already resolved autonomously. No request file is ever written for trust-matched commands.
+
+The stderr messages use the `[trust]` prefix so operators can distinguish auto-decisions from human approvals in logs: `[trust] auto-approved: git push origin main` or `[trust] auto-rejected: git push origin main`.
+
+### readTrustLedger / writeTrustLedger — server-utils.ts
+
+```ts
+export function readTrustLedger(filePath: string): TrustLedger
+export function writeTrustLedger(filePath: string, ledger: TrustLedger): void
+```
+
+`readTrustLedger` wraps `readFileSync` + `JSON.parse` in a try/catch — any error (file not found, malformed JSON) returns `{ rules: [] }`. `writeTrustLedger` calls `mkdirSync(dirname(filePath), { recursive: true })` then `writeFileSync(filePath, JSON.stringify(ledger, null, 2))`.
+
+`defaultTrustPath()` returns `join(homedir(), ".gstack-console", "trust.json")`.
+
+### AC → verification mapping (T21)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `describe("GET /api/trust (AC1)")` — 2 tests: missing file → `{ rules: [] }`; existing file with 1 rule → rules array returned | done_check |
+| AC2 | `describe("POST /api/trust (AC2)")` — 4 tests: valid POST → 200 + `{ rule }` + file written; unknown agent → 400; empty pattern → 400; invalid action → 400 | done_check |
+| AC3 | `describe("DELETE /api/trust/:id (AC3)")` — 2 tests: existing rule → 204 + rule removed from file; unknown id → 404 | done_check |
+| AC4 | `bash-wrapper.test.sh` — AC4 block: write trust.json with approve rule for `test_agent`; run `git push origin main`; assert exit 0 and no request file written | done_check |
+| AC5 | `bash-wrapper.test.sh` — AC5 block: pattern `"push"` (substring) matches `"git push origin main"`; assert exit 0 and no request file | done_check |
+| AC6a | `bash-wrapper.test.sh` — AC6a block: reject rule; run `git push`; assert exit 1 and no request file | done_check |
+| AC6b | `bash-wrapper.test.sh` — AC6b block: corrupt `trust.json` (`NOT JSON {{{`); run `git push`; assert wrapper falls through — request file written, exit non-zero after timeout | done_check |
+
+---
+
+## Trust rules UI (T22)
+
+T22 adds the Trust management surface to the Queue tab and wires the bash wrapper to write auto-decision files, so trust-resolved commands never surface as human-approval requests.
+
+### Trust section in the Queue tab (AC1–AC5)
+
+A `<section id="section-trust" hidden>` panel lives at the bottom of the Queue tab, below the Attention section. It is hidden by default and shown only when trust rules exist or the add-rule form is open (AC4). No "Pause" button is present on trust rules (AC5 — pausing is a v2 feature).
+
+**Rule rows (AC1/AC2):** Each rule from `GET /api/trust` is rendered as a `.trust-rule-row` card showing:
+- Agent name (`.trust-rule-agent`, monospace, dimmed)
+- Pattern (`.trust-rule-pattern`, monospace, `flex: 1`)
+- Action badge (`.trust-action-approve` green / `.trust-action-reject` red)
+- **Revoke** button — on click: calls `DELETE /api/trust/{id}` (path param, not query string — T22-amended fix), filters the rule from `trustRules[]`, and fades the row out in 300ms via `exitCard()`.
+
+**Add rule form (AC3):** Clicking the **Add rule** button (`#trust-add-btn`) hides itself and reveals `#trust-add-form` with:
+- Agent `<select>` — populated from `GET /api/fleet` via `populateTrustAgentSelect()` (live list of known agents)
+- Pattern `<input type="text">` — free-text, focused automatically on open
+- Action `<input type="radio">` group — Approve / Reject (approve pre-checked)
+- **Save** button — POSTs `{ agent, pattern, action }` to `POST /api/trust`; on 200 appends the new rule row immediately and closes the form
+- **Cancel** button — closes the form without submitting; clears the pattern field
+
+**Visibility state (AC4):** `syncTrustState()` is called after every fetch, render, add, or revoke. It reads `trustRules.length > 0 || trustFormOpen` and toggles the `hidden` attribute on `#section-trust` accordingly. The section is never shown on non-Queue tabs (`switchTab` hides it when switching away from `'queue'`).
+
+### AC → verification mapping (T22)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `qa-smoke.sh` — POST /api/trust; GET /api/trust → rules array; `index.html` has `section-trust` and `trust-rules` elements | e2e_check |
+| AC2 | PR review — click Revoke; confirm `DELETE /api/trust/{id}` fires (path param); row fades out 300ms | human-verify |
+| AC3 | PR review — click Add rule; fill form; Save; confirm new row appears without page reload | human-verify |
+| AC4 | PR review — 0 rules, confirm Trust section hidden; add rule, confirm visible | human-verify |
+| AC5 | PR review — inspect rendered rows, confirm no Pause button present | human-verify |
+| AC6 | `bash-wrapper.test.sh` — approve rule + matching command → exit 0, no request file, decision file `{approved:true,auto:true}`, stderr `[trust] auto-approved:` | done_check |
+| AC7 | `bash-wrapper.test.sh` — reject rule + matching command → exit 1, no request file, decision file `{approved:false,auto:true}`, stderr `[trust] auto-rejected:` | done_check |
+| AC8 | `server.test.ts` — `makeDecisionsWatchHandler`: decision file with `auto:true` → no `approval` SSE broadcast; request `.json` file → broadcast fires | done_check |
+
+---
+
 ## Console UI — design system (v7.1)
 
 The console frontend uses a dark-theme design system coordinated with `docs/DESIGN.md`.
@@ -1570,7 +2137,7 @@ No custom key handlers are needed — the browser's native button behavior is le
 
 - **No dependencies:** `console.js` uses vanilla JavaScript with no npm packages (htmx is not required for core functionality).
 - **Event source:** SSE endpoint is `/api/events` (shared with agent log broadcasting).
-- **Event types:** `approval`, `attention`, `resolve` (queue/attention events from the server); `pipeline-update` (ledger change events, triggers a `fetchPipeline()` call when the Pipeline tab is active); `stuck` (edge-triggered alert when an agent is stuck, triggers `renderStuckSection()` to show or update the stuck alert card above the Queue attention section).
+- **Event types:** `approval`, `attention`, `resolve` (queue/attention events from the server); `pipeline-update` (ledger change events, triggers a `fetchPipeline()` call when the Pipeline tab is active); `stuck` (edge-triggered alert when an agent is stuck, triggers `renderStuckSection()` to show or update the stuck alert card above the Queue attention section); `workspace-switch` (T18 — carries `{ workspaceId, name }`, calls `updateWorkspacePill()` to update the header pill and checkmark without rebuilding the full list).
 - **HTML escaping:** All dynamic content is escaped via an `esc()` helper function to prevent XSS.
 - **State sync:** A `syncState()` function centralizes the logic for updating empty states, counts, badges, and the document title after every card operation.
 - **Timer display:** Elapsed time on each card updates every 1 second (minutes:seconds format).
@@ -1939,9 +2506,91 @@ BUG-2 adds one static-analysis test that prevents the `agentList` ReferenceError
 |---|---|
 | `server.ts passes validAgents (not agentList) to computeStuckSignals` | Reads `server.ts` source with `readFileSync` and asserts `/computeStuckSignals\s*\(\s*agentList\b/` does not match. Any merge conflict that reintroduces the wrong variable name fails this test immediately, before the server even boots. |
 
+### Workspace registry tests — server.test.ts (T17 AC1–AC7)
+
+T17 adds 7 describe blocks (11 tests total) behind port 7880. All blocks use a `makeWorkspacesHandler` factory that mirrors the server.ts workspace endpoints, with injectable `workspacesPath`, `rebuildValidAgentsFn`, `broadcastFn`, and `existsFn`.
+
+| Describe block | AC | Tests | What they assert |
+|---|---|---|---|
+| `GET /api/workspaces (AC1)` | AC1 | 2 | Missing file → `{ workspaces: [], activeId: null }` 200; populated file → registry body returned |
+| `POST /api/workspaces (AC2)` | AC2 | 3 | Relative controlDir → 400; absent `ledger/` dir → 400; valid absolute path → workspace appended and returned |
+| `DELETE /api/workspaces/:id (AC3)` | AC3 | 2 | Delete active workspace → activeId shifts to next; delete last → activeId null |
+| `POST /api/workspaces/:id/activate (AC4)` | AC4 | 1 | Sets activeId, broadcasts `workspace-switch` SSE frame with `workspaceId/name/controlDir`, returns `{ ok: true }` |
+| `bootstrapWorkspace AC5/AC6` | AC5/AC6 | 2 | Absent registry → created with CONTROL_DIR as activeId; existing registry without that path → appended, original activeId preserved |
+| `POST /api/workspaces/:id/activate validAgents reload (AC7)` | AC7 | 1 | `rebuildValidAgentsFn` called with the activated workspace's `controlDir` |
+
+Port 7880 is used for the HTTP server tests; AC5 and AC6 are pure unit tests that call `bootstrapWorkspace` directly with temp file paths.
+
+### CONTROL_DIR back-compat tests — server.test.ts (T17a AC1–AC4)
+
+T17a adds 4 describe blocks (4 tests total) after the T17 workspace registry suite. The blocks use the same `bootstrapWorkspace`, `makeWorkspacesHandler`, `writeWorkspaceRegistry`, and `parseFleetConf` imports as the T17 tests.
+
+| Describe block | AC | Tests | Port | What they assert |
+|---|---|---|---|---|
+| `CONTROL_DIR back-compat: first boot (AC1)` | AC1 | 1 | 7885 | `bootstrapWorkspace` on absent `workspaces.json` → GET returns 1 workspace; `activeId` equals that workspace's UUID4 `id`; `controlDir` matches the tmp dir |
+| `CONTROL_DIR back-compat: existing registry (AC2)` | AC2 | 1 | 7886 | Pre-existing registry with 1 workspace and `existingActiveId`; `bootstrapWorkspace` appends new path → GET returns 2 workspaces; `activeId` still `existingActiveId`; new workspace present but not active |
+| `CONTROL_DIR back-compat: validAgents (AC3)` | AC3 | 1 | — | `parseFleetConf` on a 3-line `fleet.conf` → Set size 3; `has("agent-be")`, `has("agent-qa")`, `has("agent-fe")` all true |
+| `CONTROL_DIR back-compat: missing fleet.conf (AC4)` | AC4 | 1 | — | `readFileSync` on absent path throws; catch path sets `validAgents = new Set()`; size 0, no exception propagates |
+
+AC3 and AC4 are pure unit tests (no HTTP server). All temp dirs use `mkdtempSync` and are cleaned up in `afterAll`.
+
+### Cost tracker tests — server.test.ts (T19 AC1–AC6 + T19-amended cache contract)
+
+T19 adds 7 tests across 6 describe blocks. Two fixture agents are created in a shared `costTestDir`: `agent-a` has a `logs/live-events.jsonl` with 2 valid cost events, 1 event with no `cost_usd` field, and 1 event with `cost_usd: "bad"` (non-numeric). `agent-b` has a JSONL with no `cost_usd` events (used for the AC6 empty-agents test).
+
+A `makeCostHandler` factory mirrors the server.ts `GET /api/cost` implementation with injectable `computeFn` and `costCache` for cache-isolation tests. `makeWorkspacesHandler` is extended with an optional `costInvalidateFn?: (wsId: string) => void` parameter so the AC3 test can hook the cache eviction without spinning up a real cost cache.
+
+| Describe block | AC | Tests | Port | What they assert |
+|---|---|---|---|---|
+| `GET /api/cost aggregation (AC1)` | T19 AC1 | 1 | 7890 | `agents` has 1 row (agent-a); `tokens_in` 300, `tokens_out` 130, `cost_usd` 0.003; `cachedAt` is string |
+| `GET /api/cost 30s cache (AC2)` | T19 AC2 | 1 | 7892 | `stubCompute` call counter = 1 after two sequential GETs; second call hit cache |
+| `GET /api/cost cache invalidation on workspace-switch (AC3)` | T19 AC3 | 1 | 7891 | Cache pre-populated for `ac3-ws1`; POST activate `ac3-ws2`; `ac3Cache.has("ac3-ws1")` is false |
+| `GET /api/cost malformed cost fields skipped (AC4)` | T19 AC4 | 1 | 7890 | HTTP 200; agent-a `cost_usd` = 0.003 (only 2 valid events counted) |
+| `GET /api/cost ?since= filter (AC5)` | T19 AC5 | 2 | 7890 | `since=11:30Z` → agents empty; `since=10:30Z` → agent-a row: tokens_in 200, cost_usd 0.002 |
+| `GET /api/cost no cost data returns empty agents (AC6)` | T19 AC6 | 1 | 7893 | agents.length = 0; total.cost_usd = 0; cachedAt is string |
+| `cost cache cachedAt` | T19-amended AC1 | 1 | 7890 | `GET /api/cost` response `cachedAt` field is a valid ISO 8601 string (`new Date(cachedAt).toISOString() === cachedAt`) |
+| `cost cache TTL` | T19-amended AC2 | 1 | 7894 | `computeFn` spy invoked exactly once after two sequential GETs within 1s; cache hit on the second call |
+| `cost cache workspace switch` | T19-amended AC3 | 1 | 7895 | Cache pre-populated for `sw-ws1` (60s TTL); `POST /api/workspaces/sw-ws2/activate` → `cache.has("sw-ws1")` is false |
+| `cost cache bypass since` | T19-amended AC4/AC5 | 1 | 7896 | Two `GET /api/cost?since=…` calls → spy invoked twice; `localCache.size === 0` (since path never writes to cache) |
+
+Port 7890 is the shared cost server (T19 AC1/AC4/AC5, T19-amended AC1). Ports 7891 (T19 AC3), 7892 (T19 AC2), and 7893 (T19 AC6) each spin up their own isolated server so cache state does not bleed between blocks. T19-amended uses ports 7894 (TTL), 7895 (workspace switch), and 7896 (since bypass) for the same reason.
+
+### AC → verification mapping (T19-amended)
+
+| AC | Verified by | Type |
+|---|---|---|
+| AC1 | `describe("cost cache cachedAt")` — clears `costCache`, calls `GET /api/cost` on COST_PORT (7890), asserts `typeof body.cachedAt === "string"` and round-trips as ISO | done_check |
+| AC2 | `describe("cost cache TTL")` — `computeFn` spy + `ws-ttl.json` registry; two GETs on 7894 within 1s; `callCount === 1` | done_check |
+| AC3 | `describe("cost cache workspace switch")` — pre-populates `cache` for `sw-ws1`; POST activate `sw-ws2` on 7895 via `makeWorkspacesHandler`; `cache.has("sw-ws1") === false` | done_check |
+| AC4 / AC5 | `describe("cost cache bypass since")` — `computeFn` spy + `ws-since.json` registry; two `?since=2026-01-01T10:00:00Z` GETs on 7896; `callCount === 2` and `localCache.size === 0` | done_check |
+
+### Trust ledger tests — server.test.ts (T21 AC1–AC3)
+
+T21 adds 8 tests across 3 describe blocks. All blocks share a `makeTrustHandler` factory that mirrors the server.ts trust route logic with injectable `trustPath` and `validAgents` parameters, letting each block run against a controlled temp file without touching the real `~/.gstack-console/trust.json`. The server binds to `T21_PORT = 7890`; since server.test.ts runs serially and T19's cost server is closed by its `afterAll` before T21's `beforeAll` fires, port reuse is safe.
+
+| Describe block | AC | Tests | What they assert |
+|---|---|---|---|
+| `GET /api/trust (AC1)` | AC1 | 2 | Missing file → `{ rules: [] }` status 200; existing file with 1 rule → rules array with correct id and pattern |
+| `POST /api/trust (AC2)` | AC2 | 4 | Valid body → 200 `{ rule }` with id/agent/pattern/action; saved rule re-read from file; unknown agent → 400; empty pattern → 400; invalid action → 400 |
+| `DELETE /api/trust/:id (AC3)` | AC3 | 2 | Existing rule → 204 and file has 0 rules; unknown id → 404 |
+
+### Decisions watcher tests — server.test.ts (T22 AC8)
+
+T22 adds a `describe("makeDecisionsWatchHandler (AC8)")` block with 5 tests verifying that the decisions watcher correctly filters auto-resolved trust decisions from the SSE broadcast. All tests use a `watchDecisionsDir` in the shared `testDir` with no isolated HTTP server — `makeDecisionsWatchHandler` is called directly.
+
+| Test | AC | What it asserts |
+|---|---|---|
+| `does NOT broadcast for .decision.json with auto:true` | AC8 | Writes `{ approved: true, auto: true }` to `test_agent-t22-auto.decision.json`; calls handler; `frames` array stays empty |
+| `does NOT broadcast for .decision.json without auto:true (human-written response)` | AC8 | Writes `{ approved: true }` (no auto field) to `test_agent-t22-human.decision.json`; calls handler; `frames` stays empty (response files are always skipped) |
+| `broadcasts approval SSE for a request .json file` | AC8 | Writes `{ agent, command, risk, request_id }` to `test_agent-t22-req-1.json`; calls handler; `frames` has 1 entry containing `event: approval` with correct `command` in data payload |
+| `does not broadcast for non-.json filenames` | AC8 | Calls handler with `README.md`, `null`, `some.txt`; `frames` stays empty |
+| `does not broadcast for unreadable .json file` | AC8 | Calls handler with a ghost filename that does not exist on disk; `frames` stays empty (try/catch returns early) |
+
+Note: the T19 cost test server was moved from port 7890 to 7899 (T22 fix) to free port 7890 for T21 trust tests. If tests fail due to port conflicts, check that no prior `afterAll` omitted a `server.close()` call.
+
 ### Test results
 
-All 135 tests pass (2 bash-wrapper + 133 server tests). Run the full suite with:
+All 161 tests pass (2 bash-wrapper + 159 server tests). Run the full suite with:
 
 ```bash
 bun test supervisor/console/     # runs all tests, exit 0 on pass
@@ -1963,36 +2612,46 @@ bash supervisor/console/qa-smoke.sh
 ### What the script verifies
 
 The script:
-1. Opens `$QA_BASE_URL` (default: `http://localhost:7842`) using `gstack browse`
-2. Asserts the page title contains "Fleet Console"
-3. Asserts a `nav[role=tablist]` (the tab bar) is visible
-4. Asserts the "Fleet" tab button is present in the DOM
-5. Asserts `GET /api/pipeline` returns HTTP 200 (T13 AC1 prerequisite)
-6. Asserts `GET /api/spec/invalid-id` returns HTTP 400 (T13 AC7)
-7. Asserts `index.html` contains the `pipeline-groups` container element (T13 AC4/AC5)
-8. Asserts the pipeline JSON response contains a `tasks` key (T13 AC4/AC5)
-9. Asserts `GET /api/stuck` returns HTTP 200 with a `"stuck"` key in the response body (T15 AC1)
-10. Asserts `index.html` contains a `stuck-cards` container element (T15 AC1/AC2)
-11. Asserts `id="stuck-alert-slot"` appears before `id="section-attention"` in the HTML source (T15 AC2 — slot is above the Queue attention section)
-12. Asserts `GET /api/pipeline` returns HTTP 200 with `content-type: application/json` (T16 AC6)
-13. Asserts `GET /api/stuck` returns HTTP 200 with `content-type: application/json` (T16 AC6)
-14. Asserts `GET /api/log/smoke-test-agent` returns HTTP 200 with `content-type: application/json` (T16 AC6)
-15. Asserts `POST /api/fleet/stop?agent=smoke-test-agent` (mock PID 99999 — non-running) returns `{ ok: true }` (T16 AC7)
-16. Captures a timestamped screenshot to `/tmp/console-qa-<timestamp>.png`
-17. Prints the screenshot path to stdout so the QA agent can attach it to its report
+1. Asserts `GET /health` returns HTTP 200
+2. Asserts `GET /` (index.html) returns HTTP 200
+3. Asserts `GET /styles.css` returns HTTP 200
+4. Asserts `GET /api/fleet` returns HTTP 200
+5. Asserts `GET /api/attention` returns HTTP 200
+6. Asserts `GET /api/queue` returns HTTP 200
+7. Asserts `GET /api/events` (SSE) returns HTTP 200
+8. Asserts `GET /api/pipeline` returns HTTP 200 (T13 AC1 prerequisite)
+9. Asserts `GET /api/spec/invalid-id` returns HTTP 400 (T13 AC7)
+10. Asserts `index.html` contains the `pipeline-groups` container element (T13 AC4/AC5)
+11. Asserts the pipeline JSON response contains a `tasks` key (T13 AC4/AC5)
+12. Asserts `GET /api/stuck` returns HTTP 200 (T15 AC1)
+13. Asserts the stuck JSON response contains a `"stuck"` key (T15 AC1)
+14. Asserts `index.html` contains a `stuck-cards` container element (T15 AC1/AC2)
+15. Asserts `id="stuck-alert-slot"` appears before `id="section-attention"` in the HTML source (T15 AC2 — slot is above the Queue attention section)
+16. Asserts `GET /api/pipeline` returns HTTP 200 with `content-type: application/json` (T16 AC6)
+17. Asserts `GET /api/stuck` returns HTTP 200 with `content-type: application/json` (T16 AC6)
+18. Asserts `GET /api/log/smoke-test-agent` returns HTTP 200 with `content-type: application/json` (T16 AC6)
+19. Asserts `POST /api/fleet/stop?agent=smoke-test-agent` (mock PID 99999 — non-running) returns `{ ok: true }` (T16 AC7)
+20. Asserts `index.html` contains a `workspace-pill` element (T18 AC1)
+21. Asserts `GET /api/workspaces` returns HTTP 200 (T17 AC1)
+22. Asserts the workspaces JSON response contains a `"workspaces"` key (T17 AC1)
+23. Asserts `index.html` contains an element with `id="cost-table"` (T20 AC1/AC7)
+24. Asserts `index.html` contains an element with `id="cost-tbody"` (T20 AC1/AC7)
+25. Asserts `GET /api/cost` returns HTTP 200 (T20 AC6)
+26. Asserts the cost JSON response contains an `"agents"` key (T20 AC6)
+27. Asserts `POST /api/trust` returns a `"rule"` key in the response (T22 AC1)
+28. Asserts `GET /api/trust` returns a `"rules"` key in the response (T22 AC1)
+29. Asserts `index.html` contains an element with `id="section-trust"` (T22 AC1)
+30. Asserts `index.html` contains an element with `id="trust-rules"` (T22 AC1)
 
-Items 12–14 use a `check_json` helper that calls `curl -D -` to capture response headers inline and checks both HTTP status and `Content-Type: application/json`. Items 14–15 require `CONTROL_DIR` to be set so `validAgents` is populated — the script creates a temporary `CONTROL_DIR` with a single-line `fleet.conf` listing `smoke-test-agent`, and writes a mock PID file at `supervisor/pids/smoke-test-agent.pid` containing `99999`. Both are cleaned up by the `EXIT` trap.
+Items 16–18 use a `check_json` helper that calls `curl -D -` to capture response headers inline and checks both HTTP status and `Content-Type: application/json`. Items 18–21 require `CONTROL_DIR` to be set so `validAgents` is populated — the script creates a temporary `CONTROL_DIR` with a single-line `fleet.conf` listing `smoke-test-agent`, and writes a mock PID file at `supervisor/pids/smoke-test-agent.pid` containing `99999`. Both are cleaned up by the `EXIT` trap. Items 25–26 call `GET /api/cost` directly with `curl`; no CONTROL_DIR is required (the endpoint reads JSONL from the home directory and returns an empty agents array when no data exists). Items 27–28 require `CONTROL_DIR` to be set (validAgents must include the agent name sent in the POST /api/trust body); the script uses `smoke-test-agent` as the agent name.
 
 ### Error handling
 
-If `gstack browse` is not on PATH, the script exits with:
-```
-gstack browse not found — install gstack or set BROWSE_BIN
-```
+If the server fails to start or a required check fails, the script exits non-zero. Run with `bash -x` for verbose output.
 
-You can override the browse binary with `BROWSE_BIN`:
+You can point the script at an already-running server by setting `PORT`:
 ```bash
-BROWSE_BIN=/path/to/custom-browse bash supervisor/console/qa-smoke.sh
+PORT=7842 bash supervisor/console/qa-smoke.sh
 ```
 
 ---

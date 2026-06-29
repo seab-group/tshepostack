@@ -2,6 +2,103 @@
 
 ## [Unreleased]
 
+### Trust rules UI + bash wrapper auto-decision (T22)
+
+The console Queue tab now has a Trust rules section at the bottom. Operators can add permanent approve/reject rules for each agent-and-pattern pair — the bash wrapper resolves matching commands immediately without showing a request card or waiting for human input. Revoked rules are faded out in 300ms and deleted from the ledger. The "Add rule" inline form populates its agent dropdown from the live fleet list, so it stays correct across workspace switches.
+
+On the server side, a new decisions directory watcher broadcasts the `approval` SSE event for new request files but silently skips any file where `auto: true` — the signal written by the wrapper on a trust-resolved command. This prevents a trust-approved command from appearing as a pending approval card in the Queue tab after the fact.
+
+#### Added
+- `<section id="section-trust" hidden>` in `index.html` — Trust rules panel inside the Queue tab with `#trust-rules` container, `#trust-add-form` (agent select, pattern input, approve/reject radio), and `#trust-add-btn` "Add rule" button; Queue tab `aria-controls` updated to include `section-trust` (T22 AC1–AC5).
+- `fetchTrust()`, `syncTrustState()`, `renderTrustRules()`, `buildTrustRuleRow()`, `populateTrustAgentSelect()` in `console.js` — Trust rules UI lifecycle; `syncTrustState()` hides the section when `trustRules.length === 0 && !trustFormOpen` (AC4); Revoke calls `DELETE /api/trust/{id}` with path param (T22-amended fix) and applies 300ms `exitCard` fade-out (AC2); Save POSTs to `/api/trust` and appends the new row immediately (AC3) (T22 AC1–AC4).
+- Trust rule CSS in `styles.css` — `.trust-rule-row`, `.trust-rule-agent`, `.trust-rule-pattern`, `.trust-action-approve` (green badge), `.trust-action-reject` (red badge), `.btn-trust-revoke` (hover red), `.trust-add-form:not([hidden])` (`:not([hidden])` prevents `display:flex` from overriding the UA `[hidden]` rule), `.trust-form-row/label/select/input`, `.trust-radio-label`, `.btn-trust-secondary`, `.btn-trust-save` (amber), `.btn-add-rule` (dashed border, full width) (T22 AC1–AC4).
+- Bash wrapper (`bin/bash`) now writes `{ "approved": true, "auto": true }` or `{ "approved": false, "auto": true }` to `$SUPERVISOR_DECISIONS_DIR/${AGENT}-${REQUEST_ID}.decision.json` on trust match, and logs `[trust] auto-approved: {cmd}` or `[trust] auto-rejected: {cmd}` to stderr — no request file is ever written for trust-matched commands (T22 AC6/AC7).
+- `makeDecisionsWatchHandler(decisionsDir, broadcastFn)` in `server-utils.ts` — watches `SUPERVISOR_DECISIONS_DIR`; on any `.json` change: reads file, skips if `parsedFile.auto === true` (trust-resolved, AC8), skips `.decision.json` response files, broadcasts `event: approval\ndata: {payload}\n\n` for new request files (T22 AC8).
+- Decisions watcher in `server.ts` — `watch(decisionsWatchDir, makeDecisionsWatchHandler(...))` at startup when `SUPERVISOR_DECISIONS_DIR` env var is set (T22 AC8).
+- 5 new tests in `describe("makeDecisionsWatchHandler (AC8)")` in `server.test.ts` — auto:true decision file skipped, human .decision.json skipped, request .json broadcasts, non-.json skipped, unreadable .json skipped (T22 AC8).
+- T22 AC6/AC7 bash wrapper tests in `bash-wrapper.test.sh` — approve rule: exit 0, no request file, decision file `{approved:True,auto:True}`, stderr `[trust] auto-approved:`; reject rule: exit 1, no request file, decision file `{approved:False,auto:True}`, stderr `[trust] auto-rejected:`.
+- 4 new assertions in `qa-smoke.sh` — POST /api/trust returns `rule` key; GET /api/trust returns `rules` key; `index.html` contains `id="section-trust"` and `id="trust-rules"` — bringing the total to 30 checks (T22 AC1).
+- 161 total tests (2 bash-wrapper + 159 server).
+
+#### Fixed
+- T19 cost test server port moved from 7890 to 7899 to avoid collision with T21 trust ledger tests on port 7890.
+
+### Cost tab UI — per-agent cost table with live SSE refresh (T20)
+
+The Cost tab now shows a real breakdown table. On first activation the console fetches `GET /api/cost` and renders one row per agent — Agent name, Tokens In, Tokens Out, Cost (USD) — plus a bold Total footer row. Cost values are formatted to four decimal places (`$0.0042`); token counts use thousands separators. A "Last updated: Xs ago" line below the table reads the `cachedAt` field from the server response. When a `fleet-update` SSE event arrives while the Cost tab is active, the table refreshes automatically, throttled to at most one fetch every 30 seconds. When no agents have emitted cost events yet, the table body shows a single centered message instead of an empty grid.
+
+#### Added
+- `<table id="cost-table">` with Agent / Tokens In / Tokens Out / Cost (USD) columns, `<tbody id="cost-tbody">`, `<tfoot id="cost-tfoot">`, and `<p id="cost-last-updated">` line in `index.html` — replaces the static `.cost-placeholder` div (T20 AC1).
+- `fetchCost()` and `renderCost(data)` in `console.js` — `fetchCost` guards with `lastCostFetch` timestamp (30s debounce); `renderCost` uses `Intl.NumberFormat` for 4-dp cost and thousands-sep tokens, writes the tfoot Total row, and updates the "Last updated" paragraph (T20 AC2/AC5).
+- `costBootstrapped` flag in `console.js` — first Cost tab click calls `fetchCost()` once; subsequent clicks reuse the cached display until the next SSE event triggers a refresh (T20 AC3).
+- `fleet-update` SSE handler extended: when `currentTab === 'cost'` and 30s have elapsed since last fetch, calls `fetchCost()` (T20 AC4).
+- Empty-state row: when `data.agents` is empty, tbody shows `<td colspan="4">No cost data yet — agents emit cost events as they run.</td>` (T20 AC6).
+- Cost-tab CSS in `styles.css` — `.cost-table`, `.cost-table th/td/tfoot`, `.cost-empty`, `.cost-num` (right-aligned numeric columns), hover-row background.
+- 4 new assertions in `qa-smoke.sh` — `id="cost-table"` in HTML, `id="cost-tbody"` in HTML, `GET /api/cost` HTTP 200, `"agents"` key in cost JSON response — bringing the total to 26 checks (T20 AC1/AC6/AC7).
+
+### Cost tracker cache — dedicated verify describe blocks lock in the cache contract (T19-amended)
+
+Four new describe blocks in `server.test.ts` tighten the test coverage on T19's cache implementation. Each block isolates one cache behavior — the `cachedAt` field, the 30-second TTL, workspace-switch invalidation, and the `?since=` cache bypass — so a future regression in any of these four invariants fails one clearly-named test rather than a general aggregation test.
+
+#### Added
+- `describe("cost cache cachedAt")` — asserts `GET /api/cost` response carries `cachedAt` as a valid ISO 8601 string (round-trips through `new Date().toISOString()`) (T19-amended AC1). Port 7890 (shared cost server).
+- `describe("cost cache TTL")` — uses an injectable `computeFn` spy; calls `GET /api/cost` twice within 1 second; asserts spy invoked exactly once (cache hit on the second call) (T19-amended AC2). Port 7894.
+- `describe("cost cache workspace switch")` — pre-populates cache for `sw-ws1` with a 60s TTL; fires `POST /api/workspaces/sw-ws2/activate`; asserts `cache.has("sw-ws1")` is false (T19-amended AC3). Port 7895.
+- `describe("cost cache bypass since")` — calls `GET /api/cost?since=…` twice; asserts spy called twice and `localCache.size === 0` (since path never writes to cache) (T19-amended AC4/AC5). Port 7896.
+- Total test suite: 148 (2 bash-wrapper + 146 server).
+
+### Cost tracker — see real token usage and cost per agent in the Cost tab (T19)
+
+The Cost tab now shows real data. Each agent writes token usage to its `live-events.jsonl` as it runs; `GET /api/cost` reads those files and returns per-agent and grand-total `tokens_in`, `tokens_out`, and `cost_usd`. A 30-second workspace-keyed cache keeps repeated tab switches from re-scanning all JSONL files. Switching workspaces evicts the outgoing workspace's cache entry immediately. A `?since=ISO` query returns a filtered, always-fresh response for time-windowed cost views.
+
+#### Added
+- `GET /api/cost` endpoint in `server.ts` — reads each agent's `live-events.jsonl`, sums `tokens_in`, `tokens_out`, and `cost_usd`; only includes agents with at least one event carrying a numeric `cost_usd` (T19 AC1).
+- `COST_CACHE_TTL_MS = 30_000` and `costCache: Map<wsId, { data: CostResponse; expiresAt: number }>` in `server.ts` — workspace-keyed 30-second in-memory cache; cache miss triggers `computeCostData`; hit returns the stored response without re-reading JSONL (T19 AC2).
+- `costCache.delete(reg.activeId)` in `POST /api/workspaces/:id/activate` — invalidates the outgoing workspace's cost cache before the workspace switch completes (T19 AC3).
+- `?since=ISO` query support — when present, `computeCostData` filters to events with `ts >= since` and always computes fresh (bypasses cache) (T19 AC5).
+- `computeCostData(agents, agentsHome, sinceIso?)` in `server-utils.ts` — per-line try/catch (same pattern as T14-amended); skips events without `cost_usd` or with non-numeric `cost_usd`; rounds per-agent and total `cost_usd` to 4 decimal places (T19 AC4).
+- `CostAgentRow` and `CostResponse` types exported from `server-utils.ts` (T19 AC1).
+- 7 new tests in `server.test.ts` across 6 describe blocks covering AC1–AC6 — ports 7890 (shared), 7891 (AC3), 7892 (AC2), 7893 (AC6). `makeWorkspacesHandler` extended with optional `costInvalidateFn`. Total test suite: 144 (2 bash-wrapper + 142 server).
+
+### Workspace switcher UI — switch ECOBA engagements from the console header (T18)
+
+Directors can now switch the active workspace without leaving the Fleet Console. A compact pill in the page header shows the current workspace name and opens a dropdown on click. From the dropdown you can switch to any registered workspace or register a new one by entering a name and its control-repo path — the server activates it and the pill updates instantly over SSE, with no page reload.
+
+#### Added
+- Workspace pill (`<details>/<summary id="workspace-pill">`) in the console page header, between the subtitle and the SSE status dot. Shows the active workspace name (truncated to 24 chars with `…`) or "No workspace" when `activeId` is null (T18 AC1).
+- Dropdown (`<div class="workspace-dropdown">`) listing all registered workspaces; active workspace is marked with a `✓` checkmark. Clicking a non-active workspace calls `POST /api/workspaces/:id/activate` and closes the dropdown (T18 AC2).
+- "+ Add workspace" button at the bottom of the dropdown expands an inline form with a Name field and a Control directory field (placeholder: `/Users/you/control-repo`) plus a Register button (T18 AC3).
+- `workspace-switch` SSE listener in `console.js` calls `updateWorkspacePill(workspaceId, name)` on every activation event — updates the pill text and checkmark without rebuilding the full list (T18 AC4).
+- 400 error from `POST /api/workspaces` is displayed in red below the Control directory field via `response.error` (T18 AC5).
+- On successful registration the form collapses, the new workspace is appended to the dropdown list, and it is auto-activated (T18 AC6).
+- Outside-click and Escape key both close the dropdown (T18 AC7).
+- 19 CSS classes for the workspace switcher component (`.workspace-switcher`, `.workspace-pill`, `.workspace-dropdown`, `.workspace-item`, `.workspace-item-active`, `.workspace-item-check`, `.workspace-add-section`, `.workspace-add-btn`, `.workspace-form`, `.workspace-form-field`, `.workspace-form-error`, `.workspace-register-btn`, and supporting classes).
+- `qa-smoke.sh`: 2 new checks — `workspace-pill` element in `index.html` (T18 AC1 e2e_check) and `GET /api/workspaces` returning 200 with `workspaces` key (T17 AC1).
+
+### CONTROL_DIR back-compat invariant locked in with tests (T17a)
+
+Any script that sets `CONTROL_DIR` and launches the console server now has four tests watching its back. The invariant — that `bootstrapWorkspace` auto-registers `CONTROL_DIR` on first boot and appends without clobbering the active workspace when a registry already exists — is tested in isolation with temp dirs, so a future refactor that silently breaks back-compat will fail CI immediately.
+
+#### Added
+- `describe("CONTROL_DIR back-compat: first boot (AC1)")` — 1 test on port 7885: no `workspaces.json` present; `bootstrapWorkspace` creates it; `GET /api/workspaces` returns exactly one workspace whose `id` is a valid UUID4 and whose `id` equals `activeId` (T17a AC1).
+- `describe("CONTROL_DIR back-compat: existing registry (AC2)")` — 1 test on port 7886: pre-existing registry with one workspace and a pinned `activeId`; `bootstrapWorkspace` appends without touching `activeId`; `GET /api/workspaces` returns 2 workspaces, original `activeId` preserved (T17a AC2).
+- `describe("CONTROL_DIR back-compat: validAgents (AC3)")` — 1 pure-unit test: `parseFleetConf` on a 3-line `fleet.conf` produces a Set of size 3 with the expected agent names (T17a AC3).
+- `describe("CONTROL_DIR back-compat: missing fleet.conf (AC4)")` — 1 pure-unit test: absent `fleet.conf` → `readFileSync` throws → catch path yields empty Set, no exception propagates (T17a AC4).
+- 150 total tests (2 bash-wrapper + 148 server).
+
+### Workspace registry — register and switch between ECOBA engagements without restart (T17)
+
+Directors who supervise multiple ECOBA engagements on one machine can now register each workspace and switch the active one from the console without restarting the server. The registry at `~/.gstack-console/workspaces.json` persists workspace names, `controlDir` paths, and an `activeId`. When the active workspace changes, `validAgents` is reloaded from the new workspace's `fleet.conf` server-side before the `workspace-switch` SSE event reaches any connected browser tab — no stale state window.
+
+#### Added
+- `GET /api/workspaces` — reads `~/.gstack-console/workspaces.json`; returns `{ workspaces: [], activeId: null }` if the file is absent (T17 AC1).
+- `POST /api/workspaces` — validates `controlDir` is absolute and `controlDir/ledger/` exists; appends a new UUID-id workspace and returns it (T17 AC2).
+- `DELETE /api/workspaces/:id` — removes workspace; shifts `activeId` to the first remaining entry or `null` if the registry empties (T17 AC3).
+- `POST /api/workspaces/:id/activate` — sets `activeId`, reloads `validAgents` from the new workspace's fleet.conf, broadcasts `workspace-switch` SSE event `{ workspaceId, name, controlDir }`, returns `{ ok: true }` (T17 AC4/AC7).
+- `bootstrapWorkspace(controlDir, path)` in `server-utils.ts` — on startup, auto-creates the registry with `CONTROL_DIR` as the sole active workspace if the file is absent (AC5); appends without changing `activeId` if the file exists but lacks that `controlDir` (AC6).
+- `Workspace` and `WorkspaceRegistry` types, `defaultWorkspacesPath`, `readWorkspaceRegistry`, `writeWorkspaceRegistry` exported from `server-utils.ts`.
+- 11 new tests on port 7880; 146 total tests (2 bash-wrapper + 144 server).
+
 ### v1 test suite — gap tests for stale PID, loop threshold, signal precedence, n=0 (T16-amended)
 
 Four boundary and multi-signal test cases that were not covered by prior suites are now locked in. The loop detection threshold boundary (4 events vs. the 5-event threshold), the `fail_storm`-over-`loop` precedence rule, the stale-PID idempotent stop path with real OS liveness checks, and the `?n=0` lower-bound rejection in the log endpoint are all now exercised in their own isolated describe blocks.
