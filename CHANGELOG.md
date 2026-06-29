@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### v2 SSE hook — useFleetStream + TanStack Query cache integration (T26)
+
+Fleet Console v2 now receives live server events without each component opening its own connection. `useFleetStream()` maintains a single `EventSource('/api/events')` across all consumers: the first component to mount opens it, the last to unmount closes it. Reconnects use exponential backoff (1s → 2s → 4s → ... → 30s) and reset on recovery. Every incoming event is pushed directly into TanStack Query's cache so fleet status, queue, and stuck-agent data update immediately with no additional network round-trip.
+
+#### Added
+- `src/hooks/useFleetStream.ts` — `useFleetStream(EventSourceClass?)` hook; module-level singleton (`_sse`, `_refCount`, `_listeners`); `_connect()` wires `onopen`, `onerror` (backoff), and named `fleet-update`/`approval`/`stuck` event listeners; `FleetEvent` union type; returns `{ connected: boolean, lastEvent: FleetEvent | null }` (T26 AC1–AC7).
+- `fleet-update` events call `queryClient.setQueryData(['fleet', agentName], payload)` — TanStack Query subscribers update without a separate API call (T26 AC3).
+- `approval` events call `queryClient.invalidateQueries({ queryKey: ['queue'] })` — queue data refetches automatically (T26 AC4).
+- `stuck` events call `queryClient.setQueryData(['stuck', payload.agent], payload)` (T26 AC5).
+- `src/hooks/useFleetStream.test.tsx` — 10 Vitest tests covering mount/unmount lifecycle, 1s→2s→4s backoff and backoff reset, all three cache operations, and singleton guarantee across two concurrent consumers; uses injectable `MockEventSource` class (T26 AC1–AC7).
+
 ### v2 server routing — serve console-v2/dist at /v2 + dev proxy (T25)
 
 Fleet Console v2 is now served by the existing console server. `GET /v2/` and all sub-paths return the built React app from `supervisor/console-v2/dist/`. Deep routes return `index.html` so React Router handles them client-side. In development, the same paths proxy transparently to the Vite dev server on port 5173 — no separate URL to manage. The v1 console at `GET /` is untouched.
