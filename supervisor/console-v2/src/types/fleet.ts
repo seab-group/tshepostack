@@ -8,3 +8,10 @@ export interface AgentInfo {
   status: AgentStatusValue
   since: string | null
 }
+
+export interface LogEvent {
+  ts: string
+  tool?: string
+  summary: string
+  file?: string
+}
