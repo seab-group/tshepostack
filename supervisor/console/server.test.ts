@@ -38,6 +38,7 @@ import {
   readTrustLedger,
   writeTrustLedger,
   defaultTrustPath,
+  makeV2Handler,
   type CostAgentRow,
   type CostResponse,
   type AgentStatus,
@@ -2344,9 +2345,13 @@ describe("log n=0", () => {
 
 describe("POST /api/draft-decision", () => {
   test("AC1: appends correct mailbox block to {controlDir}/mailboxes/{agentName}.md", async () => {
-    capturedGitArgs = null;
-    gitShouldFail = false;
-    const mailboxFile = join(draftMailboxDir, "agent-be.md");
+    t15aTaskFailCalls = [];
+    t15aSpawnCalls = [];
+    t15aMockTaskFailCode = 0;
+    writeFileSync(
+      join(t15aLedgerDir, "TASK-001.task"),
+      "id: TASK-001\nclaimed_by: agent-be\nstatus: in_progress\n",
+    );
 
     const r = await fetch(`http://127.0.0.1:${T15A_PORT}/api/fleet/restart?agent=agent-be`, { method: "POST" });
     expect(r.status).toBe(200);
@@ -3254,5 +3259,99 @@ describe("cost cache bypass since", () => {
     } finally {
       await new Promise<void>((r) => s.close(() => r()));
     }
+  });
+});
+
+// T25 — /v2/* routing: production SPA serving + v1 static unaffected.
+const V2_PORT = 7897;
+const V2_NO_DIST_PORT = 7898;
+let v2TestDir: string;
+let v2Server: Server;
+let v2NoDistServer: Server;
+
+describe("T25: /v2/* routing", () => {
+  beforeAll(async () => {
+    // Create a temp dist directory with index.html and JS/CSS assets.
+    v2TestDir = mkdtempSync(join(tmpdir(), "v2-test-"));
+    const assetsDir = join(v2TestDir, "assets");
+    mkdirSync(assetsDir, { recursive: true });
+    writeFileSync(join(v2TestDir, "index.html"), "<html><body>v2 SPA</body></html>");
+    writeFileSync(join(assetsDir, "main.abc123.js"), "console.log('v2')");
+    writeFileSync(join(assetsDir, "style.def456.css"), "body { color: red }");
+
+    // Create a temp v1 dir with its own index.html for AC5.
+    const v1TestDir = mkdtempSync(join(tmpdir(), "v1-test-"));
+    writeFileSync(join(v1TestDir, "index.html"), "<html><body>v1 console</body></html>");
+
+    const v2Handler = makeV2Handler(v2TestDir);
+
+    // Server with both v2 handler and v1 static (AC1, AC2, AC3, AC5).
+    v2Server = createServer((req, res) => {
+      const path = rawPath(req.url);
+      if (path.startsWith("/v2")) {
+        v2Handler(req, res);
+        return;
+      }
+      serveStatic(v1TestDir, path, res);
+    });
+    await new Promise<void>((r) => v2Server.listen(V2_PORT, "127.0.0.1", r));
+
+    // Server for AC6: empty dist dir (no index.html).
+    const emptyDir = mkdtempSync(join(tmpdir(), "v2-empty-"));
+    const v2NoDistHandler = makeV2Handler(emptyDir);
+    v2NoDistServer = createServer((req, res) => v2NoDistHandler(req, res));
+    await new Promise<void>((r) => v2NoDistServer.listen(V2_NO_DIST_PORT, "127.0.0.1", r));
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((r) => v2Server.close(() => r()));
+    await new Promise<void>((r) => v2NoDistServer.close(() => r()));
+    rmSync(v2TestDir, { recursive: true, force: true });
+  });
+
+  test("AC1: GET /v2/ returns 200 with text/html content-type and SPA content", async () => {
+    const res = await fetch(`http://127.0.0.1:${V2_PORT}/v2/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("v2 SPA");
+  });
+
+  test("AC2: GET /v2/assets/*.js returns 200 with application/javascript", async () => {
+    const res = await fetch(`http://127.0.0.1:${V2_PORT}/v2/assets/main.abc123.js`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/javascript");
+    const body = await res.text();
+    expect(body).toContain("console.log");
+  });
+
+  test("AC2: GET /v2/assets/*.css returns 200 with text/css", async () => {
+    const res = await fetch(`http://127.0.0.1:${V2_PORT}/v2/assets/style.def456.css`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/css");
+  });
+
+  test("AC3: GET /v2/some/deep/route returns dist/index.html as SPA fallback", async () => {
+    const res = await fetch(`http://127.0.0.1:${V2_PORT}/v2/some/deep/route`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("v2 SPA");
+  });
+
+  test("AC5: GET / still serves v1 index.html unaffected by /v2 routing", async () => {
+    const res = await fetch(`http://127.0.0.1:${V2_PORT}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("v1 console");
+  });
+
+  test("AC6: GET /v2/ with missing dist/index.html returns 503 with error body", async () => {
+    const res = await fetch(`http://127.0.0.1:${V2_NO_DIST_PORT}/v2/`);
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: string };
+    expect(body.error).toContain("v2 not built");
+    expect(body.error).toContain("supervisor/console-v2/");
   });
 });

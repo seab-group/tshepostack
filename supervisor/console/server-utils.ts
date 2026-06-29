@@ -1,7 +1,8 @@
 // supervisor/console/server-utils.ts — pure utility functions, no side effects
+import { request as httpRequest } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { readdirSync, readFileSync, statSync, unlinkSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve, sep, dirname, basename } from "node:path";
+import { readdirSync, readFileSync, statSync, unlinkSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { join, resolve, sep, dirname, basename, extname } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -761,5 +762,76 @@ export async function readAndValidatePostBody(
   } catch {
     return { ok: false, statusCode: 400, error: "invalid JSON body" };
   }
+}
+
+// T25: MIME map for /v2/assets/* (spec-defined extensions only).
+const V2_MIME_MAP: Record<string, string> = {
+  ".js": "application/javascript",
+  ".css": "text/css",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".woff2": "font/woff2",
+};
+
+// T25: factory for the /v2/* request handler.
+// In production: serves <v2DistDir>/ with SPA fallback for non-asset paths.
+// In development (NODE_ENV=development): proxies to Vite at localhost:5173.
+export function makeV2Handler(
+  v2DistDir: string,
+): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req: IncomingMessage, res: ServerResponse): void => {
+    const urlPath = rawPath(req.url);
+
+    if (process.env.NODE_ENV === "development") {
+      // AC4: proxy to Vite dev server, stripping /v2 prefix; no Host header forwarded.
+      const fullUrl = req.url ?? "/";
+      const proxiedPath = fullUrl.startsWith("/v2") ? fullUrl.slice("/v2".length) || "/" : fullUrl;
+      const { host: _host, ...forwardHeaders } = req.headers;
+      const proxyReq = httpRequest(
+        { hostname: "localhost", port: 5173, path: proxiedPath, method: req.method, headers: forwardHeaders },
+        (proxyRes) => {
+          res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
+          proxyRes.pipe(res);
+        },
+      );
+      proxyReq.on("error", (err) => sendJson(res, { error: (err as Error).message }, 502));
+      req.pipe(proxyReq);
+      return;
+    }
+
+    const indexHtml = join(v2DistDir, "index.html");
+
+    // AC6: dist/index.html missing → 503.
+    if (!existsSync(indexHtml)) {
+      sendJson(res, { error: "v2 not built — run bun run build in supervisor/console-v2/" }, 503);
+      return;
+    }
+
+    // AC2: /v2/assets/* — serve asset with correct MIME type.
+    if (urlPath.startsWith("/v2/assets/")) {
+      const assetRel = urlPath.slice("/v2/assets/".length);
+      const safeAssetsDir = resolve(join(v2DistDir, "assets"));
+      const assetPath = resolve(join(v2DistDir, "assets", assetRel));
+      if (!assetPath.startsWith(safeAssetsDir + sep)) {
+        res.writeHead(400); res.end("Bad Request");
+        return;
+      }
+      const ext = extname(assetPath).toLowerCase();
+      const mime = V2_MIME_MAP[ext] ?? "application/octet-stream";
+      try {
+        const content = readFileSync(assetPath);
+        res.writeHead(200, { "content-type": mime, "content-length": content.length });
+        res.end(content);
+      } catch {
+        res.writeHead(404); res.end("Not Found");
+      }
+      return;
+    }
+
+    // AC1/AC3: SPA fallback — serve index.html for all other /v2/* paths.
+    const html = readFileSync(indexHtml);
+    res.writeHead(200, { "content-type": "text/html", "content-length": html.length });
+    res.end(html);
+  };
 }
 

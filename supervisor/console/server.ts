@@ -28,8 +28,26 @@ import {
   gitCommitAndPush,
   resolvePort,
   readApprovals,
-  resolveControlDir,
+  makeV2Handler,
+  defaultWorkspacesPath,
+  bootstrapWorkspace,
+  makeRateLimiter,
+  readAndValidatePostBody,
+  readPidFile,
+  defaultIsProcessAlive,
+  defaultKillFn,
+  stopProcess,
+  readLogTail,
+  computeStuckSignals,
+  computeCostData,
+  readWorkspaceRegistry,
+  writeWorkspaceRegistry,
+  readTrustLedger,
+  writeTrustLedger,
+  defaultTrustPath,
+  purgeStaleDecisionFiles,
 } from "./server-utils.ts";
+import type { CostResponse, Workspace, TrustRule } from "./server-utils.ts";
 
 // Validate PORT early — before any filesystem reads (AC5: exit 1 before bind).
 const PORT = (() => {
@@ -43,6 +61,8 @@ const PORT = (() => {
 const HOSTNAME = "127.0.0.1";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const supervisorDir = dirname(__dirname); // directory containing console/
+const v2DistDir = join(supervisorDir, "console-v2", "dist");
+const handleV2 = makeV2Handler(v2DistDir);
 
 
 async function handleMailbox(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
@@ -631,6 +651,12 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     ledger.rules.splice(idx, 1);
     writeTrustLedger(trustPath, ledger);
     res.writeHead(204); res.end();
+    return;
+  }
+
+  // T25: GET /v2/* — serve console-v2 SPA in production; proxy to Vite in development.
+  if (path.startsWith("/v2")) {
+    handleV2(req, res);
     return;
   }
 
