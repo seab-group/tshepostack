@@ -16,6 +16,8 @@ Object.defineProperty(globalThis, 'Comment', { value: dom.window.Comment, writab
 Object.defineProperty(globalThis, 'DocumentFragment', { value: dom.window.DocumentFragment, writable: true })
 Object.defineProperty(globalThis, 'MutationObserver', { value: dom.window.MutationObserver, writable: true })
 Object.defineProperty(globalThis, 'localStorage', { value: dom.window.localStorage, writable: true })
+Object.defineProperty(globalThis, 'Event', { value: dom.window.Event, writable: true })
+Object.defineProperty(globalThis, 'KeyboardEvent', { value: dom.window.KeyboardEvent, writable: true })
 
 const defaultMq = (_query: string) => ({
   matches: false,

@@ -1,5 +1,7 @@
 import { motion } from 'framer-motion'
 import { ThemeToggle } from './components/ThemeToggle'
+import { ShortcutsDialog } from './components/ShortcutsDialog'
+import { useShortcuts } from './hooks/useShortcuts'
 
 function StatusRing() {
   return (
@@ -13,6 +15,8 @@ function StatusRing() {
 }
 
 function App() {
+  useShortcuts()
+
   return (
     <div className="flex min-h-screen flex-col bg-[--color-base] text-[--color-text]">
       <header className="flex items-center justify-between px-6 py-4 border-b border-[--color-border]">
@@ -31,6 +35,7 @@ function App() {
           <h1 className="text-2xl font-semibold">Coming soon</h1>
         </motion.div>
       </main>
+      <ShortcutsDialog />
     </div>
   )
 }
